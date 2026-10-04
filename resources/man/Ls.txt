@@ -1,0 +1,55 @@
+NAME
+       ls - list directory contents
+
+SYNOPSIS
+       ls [OPTION]... [FILE]...
+
+DESCRIPTION
+	List information about the FILEs (the current directory by default). 
+    	Files are listed one per line in all options   	 
+		Sort entries alphabetically if none of -cftuvSUX are specified.
+
+		-a	show hidden files (do not ignore entries starting with .)
+
+		-c	with -lt: sort by, and show, ctime (time of last modification of file status information); 
+       				with -l: show ctime and sort by name; 
+       				otherwise: sort by ctime, newest first
+
+		-d	list directories themselves, not their contents
+
+		-g	like -l, but do not list owner
+
+		-G	in a long listing, don't print group names
+
+		-h	human-readable (with -l, print sizes in human readable format (e.g., 1K 234M 2G))
+
+		-H	follow symbolic links listed on the command line
+
+		-l	use a long listing format
+
+		-L	when showing file information for a symbolic link, 
+       		show information for the file the link references rather than for the link itself
+
+		-o	like -l, but do not list group information
+
+		-Q	enclose entry names in double quotes
+
+		-r	reverse order while sorting
+
+		-R	recursive (list subdirectories recursively)
+
+		-S	sort by file size
+
+		-t	sort by modification time, newest first
+
+		-w	assume screen width instead of current value
+              
+		-u	with -lt: sort by, and show, access time; 
+			with -l: show access time and sort by name; 
+			otherwise: sort by access time
+
+		-U	do not sort; list entries in directory order
+
+		-X	sort alphabetically by entry extension
+
+		

@@ -1,0 +1,19 @@
+
+NAME
+     echo – write arguments to the standard output
+
+SYNOPSIS
+     echo [-n] [string ...]
+
+DESCRIPTION
+     The echo utility writes any specified operands, separated by single blank (‘ ’) characters 
+     and followed by a newline (‘\n’) character, to the standard output.
+
+     The following option is available:
+
+     -n    Do not print the trailing newline character.  
+     		
+
+    
+EXIT STATUS
+     The echo utility exits 0 on success, and >0 if an error occurs.

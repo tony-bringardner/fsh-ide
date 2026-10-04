@@ -1,0 +1,85 @@
+
+NAME
+     cp – copy files
+
+SYNOPSIS
+     cp [-R [-H | -L | -P]] [-f | -i | -n] [-aclNpSsvXx] source_file target_file
+     cp [-R [-H | -L | -P]] [-f | -i | -n] [-aclNpSsvXx] source_file ... target_directory
+     cp [-f | -i | -n] [-aclNPpSsvXx] source_file target_file
+     cp [-f | -i | -n] [-aclNPpSsvXx] source_file ... target_directory
+
+DESCRIPTION
+     In the first synopsis form, the cp utility copies the contents of the source_file to the target_file.  
+     In the second synopsis form, the contents of each named source_file is copied to the
+     destination target_directory.  The names of the files themselves are not changed.  
+     If cp detects an attempt to copy a file to itself, the copy will fail.
+
+     The following options are available:
+
+     -H    If the -R option is specified, symbolic links on the command line are followed.  
+     		(Symbolic links encountered in the tree traversal are not followed.)
+
+     -L    If the -R option is specified, all symbolic links are followed.
+
+     -P    No symbolic links are followed.  This is the default if the -R option is specified.
+
+     -R    If source_file designates a directory, cp copies the directory and the entire subtree connected at that point.  
+     		If the source_file ends in a /, the contents of the directory are copied rather than the directory itself.  
+     		This option also causes symbolic links to be copied, rather than indirected through, and for cp to create special 
+     		files rather than copying them as normal files.  
+     		Created directories have the same mode as the corresponding source directory, unmodified by the process' umask.
+
+           	In -R mode, cp will continue copying even if errors are detected.
+
+           	Note that cp copies hard linked files as separate files.  
+
+     -a    Archive mode.  Same as -RpP.  Preserves structure and attributes of files but not directory structure.
+
+     -f    For each existing destination pathname, remove it and create a new file, without prompting for confirmation 
+     		regardless of its permissions.  (The -f option overrides any previous -i or -n options.)
+
+           The target file is not unlinked before the copy.  Thus, any existing access rights will be retained.
+
+     -i    Cause cp to write a prompt to the standard error output before copying a file that would overwrite an existing file.  
+     		If the response from the standard input begins with the character ‘y’ or ‘Y’, the file copy is attempted.  
+     		(The -i option overrides any previous -f or -n options.)
+
+     -l    Create hard links to regular files in a hierarchy instead of copying.
+
+     -N    When used with -p, suppress copying file flags.
+
+     -n    Do not overwrite an existing file.  (The -n option overrides any previous -f or -i options.)
+
+     -p    Cause cp to preserve the following attributes of each source file in the copy: 
+     		modification time, access time, file flags, file mode, user ID, and group ID, as allowed by permissions.
+
+           	If the user ID and group ID cannot be preserved, no error message is displayed and the exit value is not altered.
+
+           	
+     -s    Create symbolic links to regular files in a hierarchy instead of copying.
+
+     -v    Cause cp to be verbose, showing files as they are copied.
+
+     -x    File system mount points are not traversed.
+
+    For each destination file that already exists, its contents are overwritten if permissions allow.  
+    Its mode, user ID, and group ID are unchanged unless the -p option was specified.
+
+    In the second synopsis form, target_directory must exist unless there is only one named source_file 
+    which is a directory and the -R flag is specified.
+
+    If the destination file does not exist, the mode of the source file is used as modified by the file mode 
+    creation mask (umask).  
+
+    Appropriate permissions are required for file creation or overwriting.
+
+    Symbolic links are always followed unless the -R flag is set, in which case symbolic links are not followed, by default.  
+    The -H or -L flags (in conjunction with the -R flag) cause symbolic links to be followed as described above.  
+    The -H, -L and -P options are ignored unless the -R option is specified.  In addition, these options override each other 
+    and the command's actions are determined by the last one specified.
+
+  	If cp encounters an I/O error during the copy, then cp may leave a partially copied target_file in place.  
+  	cp specifically avoids cleaning up the output file in error cases to avoid further data loss in cases where the 
+  	source may not be recoverable. 
+    
+     

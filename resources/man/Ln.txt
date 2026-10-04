@@ -1,0 +1,41 @@
+
+NAME
+     ln – link files
+
+SYNOPSIS
+     ln [-L | -P | -s [-F]] [-f | -iw] [-hnv] source_file [target_file]
+     ln [-L | -P | -s [-F]] [-f | -iw] [-hnv] source_file ... target_dir
+
+DESCRIPTION
+     The ln utility creates a new directory entry (linked file) for the file name specified by target_file.  The target_file will be created with the same file modes as the source_file.  It is
+     useful for maintaining multiple copies of a file in many places at once without using up storage for the “copies”; instead, a link “points” to the original copy.  There are two types of links;
+     hard links and symbolic links.  How a link “points” to a file is one of the differences between a hard and symbolic link.
+
+     The options are as follows:
+
+     -L    When creating a hard link to a symbolic link, create a hard link to the target of the symbolic link.  
+     		This is the default.  This option cancels the -P option.
+
+     -P    When creating a hard link to a symbolic link, create a hard link to the symbolic link itself.  
+     		This option cancels the -L option.
+
+     -f    If the target file already exists, then unlink it so that the link may occur.  
+     		(The -f option overrides any previous -i and -w options.)
+
+     -h    If the target_file or target_dir is a symbolic link, do not follow it.  
+     		This is most useful with the -f option, to replace a symlink which may point to a directory.
+
+     -i    Cause ln to write a prompt to standard error if the target file exists.  
+     		If the response from the standard input begins with the character ‘y’ or ‘Y’, then unlink the target file so that
+           	the link may occur.  Otherwise, do not attempt the link.  (The -i option overrides any previous -f options.)
+
+     -s    Create a symbolic link.
+
+     -v    Cause ln to be verbose, showing files as they are processed.
+
+
+     By default, ln makes hard links.  A hard link to a file is indistinguishable from the original directory entry; 
+     any changes to a file are effectively independent of the name used to reference the file.  
+     Directories may not be hardlinked, and hard links may not span file systems.
+
+     
