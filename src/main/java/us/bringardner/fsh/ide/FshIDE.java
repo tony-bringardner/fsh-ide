@@ -43,6 +43,8 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.prefs.BackingStoreException;
 import java.util.prefs.Preferences;
 
@@ -63,6 +65,9 @@ import javax.swing.JSplitPane;
 import javax.swing.JTextArea;
 import javax.swing.JTextField;
 import javax.swing.SwingUtilities;
+import javax.swing.Timer;
+import javax.swing.event.DocumentEvent;
+import javax.swing.event.DocumentListener;
 import javax.swing.border.EmptyBorder;
 import javax.swing.border.EtchedBorder;
 import javax.swing.border.TitledBorder;
@@ -73,6 +78,8 @@ import org.antlr.v4.runtime.CharStreams;
 import org.antlr.v4.runtime.CommonTokenStream;
 import org.antlr.v4.runtime.ParserRuleContext;
 import org.antlr.v4.runtime.RecognitionException;
+import org.antlr.v4.runtime.Token;
+import org.antlr.v4.runtime.misc.Interval;
 import org.antlr.v4.runtime.Recognizer;
 import org.antlr.v4.runtime.tree.ParseTree;
 
@@ -136,6 +143,10 @@ public class FshIDE extends JFrame  {
 
 
 		ideWindows.remove(p);
+		if( p.boundsTimer.isRunning()) {
+			p.saveBounds();
+		}
+		p.changeTimer.stop();
 		p.dispose();
 
 		if( ideWindows.size() == 0 ) {
@@ -220,12 +231,20 @@ public class FshIDE extends JFrame  {
 			setCurrentState(RunState.StepInto);
 		};
 
+		// the script leaves the line it was paused on
+		private void continuing() {
+			if( SwingUtilities.isEventDispatchThread()) {
+				editorPane.removeAllLineHighlights();
+			}
+		}
+
 		public void terminate() {		
 			actionDebug(true);
 		};
 
 		@Override
 		public void resume() {
+			continuing();
 			setCurrentState(RunState.Running);
 		};
 
@@ -257,28 +276,41 @@ public class FshIDE extends JFrame  {
 			return  ret;
 		}
 
+		// the statement about to run, and its context; read when the script pauses
+		private ParserRuleContext current;
+		private ShellContext currentCtx;
+
 		@Override
 		public synchronized void before(ParserRuleContext context,ShellContext ctx) {
 			if( getCurrentState() == RunState.Terminate) {
 				throw new LoopControlException(LoopControl.Break, 100000);
 			}
-			if(runState == IdeRunstate.Debugging && context != null ) {
-				int line = context.start.getLine()+lineAdjust;
-				//System.out.println("Before  line="+line+" state="+debugContext.getCurrentState()+" contex="+context.getClass().getSimpleName());
+			current = context;
+			currentCtx = ctx;
+		}
 
-				if( line >=0) {
-					Map<String,Object> vars = ctx.getVariables();
-					SwingUtilities.invokeLater(()->{				
-						//editorPane.setCeretPosotionFromLine(line-1);
+		@Override
+		public synchronized void setCurrentState(RunState state) {
+			super.setCurrentState(state);
+			// set by the script's thread as it stops at a breakpoint or step: show where it
+			// is and its variables. Nothing is done for the statements in between.
+			if( state == RunState.AtBreakpoint && current != null && currentCtx != null
+					&& runState == IdeRunstate.Debugging) {
+				int line = current.start.getLine()+lineAdjust;
+				Map<String,Object> vars = currentCtx.getVariables();
+				ShellContext ctx = currentCtx;
+				SwingUtilities.invokeLater(()->{
+					flushLog();
+					editorPane.removeAllLineHighlights();
+					if( line >= 0 ) {
 						try {
-							editorPane.removeAllLineHighlights();
 							editorPane.addLineHighlight(line, Color.green);
 						} catch (BadLocationException e) {
 							showError(e, "Add hilight");
 						}
-						debugVariablePanel.setContext(editorPane, ctx, vars);
-					});				
-				}
+					}
+					debugVariablePanel.setContext(editorPane, ctx, vars);
+				});
 			}
 		}
 
@@ -286,30 +318,80 @@ public class FshIDE extends JFrame  {
 		public synchronized void after(ParserRuleContext context,ShellContext ctx) {
 			if(runState == IdeRunstate.Debugging && context != null ) {
 				int line = context.start.getLine()+lineAdjust;
-				//System.out.println("After  line="+line+" state="+debugContext.getCurrentState()+" contex="+context.getClass().getSimpleName());
 				if( line >=0) {
-					String msg = ""+(line+1)+": "+context.getText();
-					Map<String,Object> vars = ctx.getVariables();
-					SwingUtilities.invokeLater(()->{
-						editorPane.removeAllLineHighlights();
-						debugVariablePanel.setContext(editorPane, ctx, vars);
-						logView.append(msg+"\n");
-					});
+					log((line+1)+": "+statementText(context)+"\n");
 				}
-
 			}
-
 		}
 
 
 		public void stepOver() {
+			continuing();
 			setCurrentState(RunState.StepOver);
 		};
 
 		public void stepInto() {
+			continuing();
 			setCurrentState(RunState.StepInto);
 		};
 	};
+
+	private static final int MAX_STATEMENT_TEXT = 120;
+	private static final int MAX_LOG_LENGTH = 200_000;
+
+	/** The statement's first line of source, cut short; doesn't build the text of its whole body. */
+	static String statementText(ParserRuleContext context) {
+		Token start = context.start;
+		Token stop = context.stop;
+		if( start == null || stop == null || start.getStartIndex() < 0 || stop.getStopIndex() < start.getStartIndex()) {
+			return "";
+		}
+		int end = Math.min(stop.getStopIndex(), start.getStartIndex()+MAX_STATEMENT_TEXT-1);
+		String ret = start.getInputStream().getText(Interval.of(start.getStartIndex(), end));
+		int nl = ret.indexOf('\n');
+		if( nl >= 0 ) {
+			ret = ret.substring(0, nl)+" ...";
+		} else if( end < stop.getStopIndex()) {
+			ret += " ...";
+		}
+		return ret;
+	}
+
+	// Debug log lines from the script's thread, added to logView in batches on the EDT
+	private final StringBuilder pendingLog = new StringBuilder();
+	private boolean logFlushScheduled;
+
+	private void log(String text) {
+		synchronized (pendingLog) {
+			pendingLog.append(text);
+			if( logFlushScheduled ) {
+				return;
+			}
+			logFlushScheduled = true;
+		}
+		SwingUtilities.invokeLater(this::flushLog);
+	}
+
+	private void flushLog() {
+		String text;
+		synchronized (pendingLog) {
+			text = pendingLog.toString();
+			pendingLog.setLength(0);
+			logFlushScheduled = false;
+		}
+		if( text.isEmpty()) {
+			return;
+		}
+		logView.append(text);
+		// keep the end of a long run's log
+		int extra = logView.getDocument().getLength() - MAX_LOG_LENGTH;
+		if( extra > 0 ) {
+			try {
+				logView.getDocument().remove(0, extra);
+			} catch (BadLocationException e) {
+			}
+		}
+	}
 
 	public static void fixWindowsIcons(final List<? extends java.awt.Image> iconImages) {
 		PropertyChangeListener l = new PropertyChangeListener() {
@@ -538,20 +620,20 @@ public class FshIDE extends JFrame  {
 					job = new ForgroundJob(sc, getCodeToRun());
 					job.start();
 
-					while(!job.hasStarted()) {
+					while(job.isAlive()) {
 						try {
-							Thread.sleep(10);
+							job.join(0);
 						} catch (InterruptedException e) {
-						}
-					}
-					while(job.isRunning()) {
-						try {
-							Thread.sleep(10);
-						} catch (InterruptedException e) {
+							// cancel() interrupts; the kill signal it sent ends the job
 						}
 					}
 					int exitCode = job.getExitCode();
-					SwingUtilities.invokeLater(()->logView.append("exitCode = "+exitCode+"\n"));
+					log("exitCode = "+exitCode+"\n");
+					if( runState == IdeRunstate.Debugging ) {
+						// the variables as the script left them
+						Map<String,Object> vars = sc.getVariables();
+						SwingUtilities.invokeLater(()->debugVariablePanel.setContext(editorPane, sc, vars));
+					}
 				}
 
 				SwingUtilities.invokeLater(()->{
@@ -561,7 +643,7 @@ public class FshIDE extends JFrame  {
 		}
 
 		public synchronized boolean isRunning () {
-			boolean ret = job !=null && job.isRunning();
+			boolean ret = job !=null && job.isAlive();
 			return ret;
 		}
 
@@ -614,7 +696,8 @@ public class FshIDE extends JFrame  {
 
 
 	JMenu openRecentMenu = new JMenu("Open Recent");
-	private IdeRunstate runState = IdeRunstate.Idel;
+	// read by the script thread too
+	private volatile IdeRunstate runState = IdeRunstate.Idel;
 
 	private JButton executeButton;
 
@@ -643,59 +726,207 @@ public class FshIDE extends JFrame  {
 	private JSplitPane centerSplitPane;
 
 	private void buildRecentMenu() {
-
 		openRecentMenu.removeAll();
-		List<Integer> obsolet = new ArrayList<Integer>();
+		for(String name : recentFiles) {
+			JMenuItem item = new JMenuItem(name);
+			item.addActionListener((e)->actionOpenRecent(name));
+			openRecentMenu.add(item);
+		}
+	}
 
+	private void actionOpenRecent(String name) {
+		if( !okToDiscard()) {
+			return;
+		}
+		try {
+			loadFile(FileSourceFactory.getDefaultFactory().createFileSource(name), autoExecuteCheckItem.isSelected());
+		} catch (IOException e) {
+			showError(e, name);
+		}
+	}
 
-		for(int idx=0,sz=recentFiles.size(); idx<sz;idx++) {
-			String name = recentFiles.get(idx);
-			FileSource tmp;
-			try {
-				tmp = FileSourceFactory.getDefaultFactory().createFileSource(name);
-				if( !tmp.exists()) {
-					obsolet.add(0, idx);
-				} else {
-					JMenuItem item = new JMenuItem(name);
-					openRecentMenu.add(item);
-					item.addActionListener(new ActionListener() {
-						public void actionPerformed(ActionEvent e) {
-							if( !okToDiscard()) {
-								return;
-							}
-							FileSource tmp=null;
-							try {
-								tmp = FileSourceFactory.getDefaultFactory().createFileSource(name);
-								setCode(readText(tmp), autoExecuteCheckItem.isSelected(), tmp);
-							} catch (IOException e1) {
-								showError(e1, name);
-								return;
-							}
-							addRecent(scriptFile);
-						}
-					});	
+	/**
+	 * Drops recent files that no longer exist. Checked in the background: they may be on
+	 * remote file systems. One that can't be checked now (unavailable) is kept.
+	 */
+	private void pruneRecentFiles() {
+		List<String> names = new ArrayList<>(recentFiles);
+		BACKGROUND.execute(()->{
+			List<String> missing = new ArrayList<>();
+			for(String name : names) {
+				try {
+					if( !FileSourceFactory.getDefaultFactory().createFileSource(name).exists()) {
+						missing.add(name);
+					}
+				} catch (IOException e) {
 				}
-			} catch (IOException e) {
-				// leave it in the list; it may be on a file system that's unavailable now
-				JMenuItem item = new JMenuItem(name);
-				item.setEnabled(false);
-				openRecentMenu.add(item);
 			}
+			if( !missing.isEmpty()) {
+				SwingUtilities.invokeLater(()->{
+					if( recentFiles.removeAll(missing)) {
+						saveRecentList(recentFiles);
+						buildRecentMenu();
+					}
+				});
+			}
+		});
+	}
 
-		}
-		for(int idx : obsolet) {
-			recentFiles.remove(idx);
-		}
-		if( obsolet.size()>0) {
-			saveRecentList(recentFiles);
-		}
-		if( scriptFile !=null ) {
-			setTitle(scriptFile.getName());
-		} else {
-			setTitle("");
-		}
+	/** Reading files, which may be on remote file systems, and checking for recent ones. */
+	private static final ExecutorService BACKGROUND = Executors.newCachedThreadPool(r->{
+		Thread t = new Thread(r, "FshIDE background");
+		t.setDaemon(true);
+		return t;
+	});
 
+	// counts edits; a file read in the background isn't shown over edits made meanwhile
+	private int editCount;
 
+	/** Reads file in the background, then shows it. */
+	private void loadFile(FileSource file, boolean execute) {
+		int edits = editCount;
+		BACKGROUND.execute(()->{
+			try {
+				String code = readText(file);
+				SwingUtilities.invokeLater(()->{
+					if( !isDisplayable() || (editCount != edits && !okToDiscard())) {
+						return;
+					}
+					setCode(code, execute, file);
+					addRecent(file);
+				});
+			} catch (IOException e) {
+				showError(e, "Can't read "+file.getAbsolutePath());
+			}
+		});
+	}
+
+	/** The title: the script's name, with a * if it has unsaved changes. */
+	private void updateTitle() {
+		String title = (hasChanged() ? "* " : "") + (scriptFile == null ? "" : scriptFile.getName());
+		if( !title.equals(getTitle())) {
+			setTitle(title);
+		}
+	}
+
+	/** After edits stop for a moment: the title, and the syntax check if the code changed. */
+	private final Timer changeTimer = new Timer(300, (e)->{
+		updateTitle();
+		checkSyntax();
+	});
+
+	private final DocumentListener changeListener = new DocumentListener() {
+		@Override
+		public void insertUpdate(DocumentEvent e) {
+			changed();
+		}
+		@Override
+		public void removeUpdate(DocumentEvent e) {
+			changed();
+		}
+		@Override
+		public void changedUpdate(DocumentEvent e) {
+		}
+		private void changed() {
+			editCount++;
+			changeTimer.restart();
+		}
+	};
+
+	/** Syntax checks, one at a time, for all windows. */
+	private static final ExecutorService SYNTAX_CHECKER = Executors.newSingleThreadExecutor(r->{
+		Thread t = new Thread(r, "FshIDE syntax check");
+		t.setDaemon(true);
+		return t;
+	});
+
+	private String lastCheckedCode;
+	// a check's result is shown only if no newer check has been asked for
+	private int syntaxCheckCount;
+	private ParseTree pendingTree;
+	private String pendingTreeErrors;
+
+	private void checkSyntax() {
+		// not trimmed: error line numbers must match the editor's
+		String code = clean(editorPane.getText());
+		if( code.equals(lastCheckedCode)) {
+			return;
+		}
+		lastCheckedCode = code;
+		int check = ++syntaxCheckCount;
+		if( code.isBlank()) {
+			editorPane.clearErrorMarkers();
+			return;
+		}
+		SYNTAX_CHECKER.execute(()->{
+			List<CompileError> errors = new ArrayList<>();
+			ParseTree tree;
+			try {
+				tree = parse(code, errors);
+			} catch (RuntimeException e) {
+				return;
+			}
+			SwingUtilities.invokeLater(()->{
+				if( check != syntaxCheckCount || !isDisplayable()) {
+					return;
+				}
+				StringBuilder buf = new StringBuilder();
+				editorPane.clearErrorMarkers();
+				for(CompileError e : errors) {
+					buf.append(""+e.line+","+e.col+" "+e.msg+"\n");
+					editorPane.addErrorMarker(e);
+				}
+				pendingTree = tree;
+				pendingTreeErrors = buf.toString();
+				showParseTree();
+			});
+		});
+	}
+
+	/** Lays out the parse tree, which only matters when the debug view shows it. */
+	private void showParseTree() {
+		if( pendingTree != null && debugSplitPane.isVisible()) {
+			debugVariablePanel.updateTree(pendingTree, pendingTreeErrors);
+			pendingTree = null;
+			pendingTreeErrors = null;
+		}
+	}
+
+	static ParseTree parse(String code, List<CompileError> errors) {
+		ShellContext ctx = new ShellContext(new Console());
+		code = ctx.console.preProcess(code, ctx);
+
+		BaseErrorListener listener = new BaseErrorListener() {
+			@Override
+			public void syntaxError(Recognizer<?, ?> recognizer, Object offendingSymbol, 
+					int line,int charPositionInLine, String msg, RecognitionException e) {
+				errors.add(new CompileError(line,charPositionInLine,msg));
+			}
+		};
+		FileSourceShLexer lexer = new FileSourceShLexer(CharStreams.fromString(code));
+		lexer.removeErrorListeners();
+		lexer.addErrorListener(listener);
+		FileSourceShParser parser = new FileSourceShParser(new CommonTokenStream(lexer));
+		parser.removeErrorListeners();
+		parser.addErrorListener(listener);
+		return parser.script();
+	}
+
+	/** Saves the window's bounds once it has stopped moving, not for every step of a drag. */
+	private final Timer boundsTimer = new Timer(500, (e)->saveBounds());
+
+	private void saveBounds() {
+		boundsTimer.stop();
+		Rectangle b = getBounds();
+		if(lastSize == null || !lastSize.equals(b)) {
+			lastSize = b;
+			prefs.put(KEY_SCREEN_LOCATION, String.format("%d,%d,%d,%d", b.x,b.y,b.width,b.height));
+			try {
+				prefs.flush();
+			} catch (BackingStoreException e) {
+				showError(e,"Can't save preferences");
+			}
+		}
 	}
 
 
@@ -1048,30 +1279,17 @@ public class FshIDE extends JFrame  {
 		});
 
 		addComponentListener(new ComponentAdapter( ) {
+			@Override
 			public void componentResized(ComponentEvent ev) {
-				updatePrefs(ev);
-			}
-
-			private void updatePrefs(ComponentEvent ev) {
-				Rectangle b = getBounds();
-				if(lastSize == null || !lastSize.equals(b)) {
-					lastSize = b;
-					String val = String.format("%d,%d,%d,%d", b.x,b.y,b.width,b.height);
-					//System.out.println("resize ev="+val);
-					prefs.put(KEY_SCREEN_LOCATION, val);
-					try {
-						prefs.flush();
-					} catch (BackingStoreException e) {
-						showError(e,"Can't save preferences");
-					}
-				}
+				boundsTimer.restart();
 			}
 
 			@Override
 			public void componentMoved(ComponentEvent e) {
-				updatePrefs(e);
+				boundsTimer.restart();
 			};
 		});
+		boundsTimer.setRepeats(false);
 
 		addWindowListener(new WindowAdapter() {
 			@Override
@@ -1080,112 +1298,23 @@ public class FshIDE extends JFrame  {
 			}
 		});
 
-		new Thread(()->{
-
-			String lastCode = null;
-			while(true) {
-				try {
-					// not trimmed: error line numbers must match the editor's
-					String code = getExecutableCode().allCode;
-					if(!code.equals(lastCode)) {
-
-						lastCode = code;
-						if( !code.isBlank()) {
-							ShellContext ctx = new ShellContext(new Console());
-							code = ctx.console.preProcess(code, ctx);
-
-							List<CompileError> errors = new ArrayList<>();
-							FileSourceShLexer lexer = new FileSourceShLexer(CharStreams.fromString(code));
-							lexer.removeErrorListeners();
-							lexer.addErrorListener(new BaseErrorListener() {
-								@Override
-								public void syntaxError(Recognizer<?, ?> recognizer, Object offendingSymbol, 
-										int line,int charPositionInLine, String msg, RecognitionException e) {
-									errors.add(new CompileError(line,charPositionInLine,msg));
-								}
-							});
-							FileSourceShParser parser = new FileSourceShParser(new CommonTokenStream(lexer));
-							parser.removeErrorListeners();
-							parser.addErrorListener(new BaseErrorListener() {
-								@Override
-								public void syntaxError(Recognizer<?, ?> recognizer, Object offendingSymbol, 
-										int line,int charPositionInLine, String msg, RecognitionException e) {
-									errors.add(new CompileError(line,charPositionInLine,msg));
-								}
-							});
-
-							ParseTree tree = parser.script();
-
-
-
-							List<CompileError> compileErors = errors;
-							SwingUtilities.invokeLater(()->{
-								StringBuilder buf = new StringBuilder();
-								editorPane.clearErrorMarkers();
-								editorPane.removeAllLineHighlights();
-								for(CompileError e : compileErors) {
-									buf.append(""+e.line+","+e.col+" "+e.msg+"\n");
-									editorPane.addErrorMarker(e);									
-								}
-								debugVariablePanel.updateTree(tree,buf.toString());
-							});
-						}	
-					};
-					Thread.sleep(100);
-				} catch (Throwable e) {
-				}
-			}
-		},"FshIDE Treeview updater").start();
-
-		new Thread(()->{
-
-			while(!isDisplayable()) {
-				try {
-					Thread.sleep(100);
-				} catch (InterruptedException e1) {
-				}					
-			}
-
-			while(isDisplayable()) {
-				boolean changed = hasChanged();
-				String title = scriptFile == null ?"":scriptFile.getName();
-
-				if( changed ) {
-					final String nm = "* "+title;
-					SwingUtilities.invokeLater(()-> setTitle(nm));
-				} else {
-					final String nm = title;
-					SwingUtilities.invokeLater(()-> setTitle(nm));
-				}
-				try {
-					Thread.sleep(1000);
-				} catch (InterruptedException e1) {
-				}
-
-			}
-			System.out.println("Exit update title thread");
-		},"FshIDE Title manager").start();
-
-		if( recentFiles != null && recentFiles.size()>0) {
-			String path = recentFiles.get(0);
-			if( path !=null && !path.isEmpty()) {
-				String fName = path;
-
-				final String name = fName;
-				SwingUtilities.invokeLater(()->{
-					try {
-						FileSource file = FileSourceFactory.getDefaultFactory().createFileSource(name);
-						setCode (readText(file),autoExecuteCheckItem.isSelected(), file);
-
-					} catch (IOException ex) {
-						showError(ex, "Can't read last edited file = "+name);
-					}
-				});
-			}
+		changeTimer.setRepeats(false);
+		editorPane.addDocumentListener(changeListener);
+		for(JTextField f : new JTextField[] {argumentsTextField, stdInTextField, stdOutTextField, stdErrTextField}) {
+			f.getDocument().addDocumentListener(changeListener);
 		}
 
-
-		createAutoComplete();
+		pruneRecentFiles();
+		if( recentFiles != null && recentFiles.size()>0) {
+			String name = recentFiles.get(0);
+			if( name !=null && !name.isEmpty()) {
+				try {
+					loadFile(FileSourceFactory.getDefaultFactory().createFileSource(name), autoExecuteCheckItem.isSelected());
+				} catch (IOException ex) {
+					showError(ex, "Can't read last edited file = "+name);
+				}
+			}
+		}
 	}
 
 
@@ -1217,6 +1346,7 @@ public class FshIDE extends JFrame  {
 			}
 			debugSplitPane.setVisible(b);		
 			centerSplitPane.resetToPreferredSizes();
+			showParseTree();
 		}
 	}
 
@@ -1230,6 +1360,7 @@ public class FshIDE extends JFrame  {
 			debugControlPanel.setVisible(true);
 			debugSplitPane.setVisible(true);
 			centerSplitPane.resetToPreferredSizes();
+			showParseTree();
 			startTask(IdeRunstate.Debugging);
 
 			break;
@@ -1416,21 +1547,18 @@ public class FshIDE extends JFrame  {
 
 
 				new Thread(()->{
-					int cnt = 0;
-					do {
+					while(task.thread.isAlive()) {
 						try {
-							Thread.sleep(10);
+							task.thread.join(1000);
 						} catch (InterruptedException e) {
 						}
-						if( ++cnt > 100) {
+						if( task.thread.isAlive()) {
 							SwingUtilities.invokeLater(()->{
 								outputTextArea.getStdOut().println("Waiting for task to complete\n");
 							});
-
 							task.thread.interrupt();
-							cnt=0;
 						}
-					} while(task.isRunning());
+					}
 
 					// only if a new run hasn't started meanwhile
 					SwingUtilities.invokeLater(()->{
@@ -1471,6 +1599,9 @@ public class FshIDE extends JFrame  {
 			executeButton.setIcon(new ImageIcon(FshIDE.class.getResource("/img/Stop.png")));
 
 			scriptArgPanel.setVisible(false);
+			synchronized (pendingLog) {
+				pendingLog.setLength(0);
+			}
 			logView.setText("");
 			outputTextArea.clear();
 			if( state == IdeRunstate.Debugging) {
@@ -1506,13 +1637,7 @@ public class FshIDE extends JFrame  {
 		if( file == null || !okToDiscard()) {
 			return;
 		}
-		try {
-			if( file.exists()) {
-				setCode(readText(file),autoExecuteCheckItem.isSelected(), file);
-			}			
-		} catch (IOException e) {
-			showError(e, "Can't read file");			
-		}
+		loadFile(file, autoExecuteCheckItem.isSelected());
 
 	}
 
@@ -1548,6 +1673,7 @@ public class FshIDE extends JFrame  {
 		editorPane.setText(buf.toString(),scriptFile);
 		// what saving it now would write, so it doesn't count as changed
 		original = getCode();
+		updateTitle();
 	}
 
 	protected void actionSave() {
@@ -1565,6 +1691,7 @@ public class FshIDE extends JFrame  {
 				write(scriptFile, code);
 				original = code;
 				addRecent(scriptFile);
+				updateTitle();
 			}
 		} catch (IOException e) {
 			showError(e, "Can't save");
@@ -1624,10 +1751,7 @@ public class FshIDE extends JFrame  {
 			recentFiles.remove(mx);
 		}
 		saveRecentList(recentFiles);
-
-		SwingUtilities.invokeLater(()->{
-			buildRecentMenu();
-		});
+		buildRecentMenu();
 
 
 	}
@@ -1649,13 +1773,7 @@ public class FshIDE extends JFrame  {
 		}
 
 		if(fc.showOpenDialog(null) == FileSourceChooserDialog.APPROVE_OPTION) {
-			FileSource file = fc.getSelectedFile();
-			try {
-				setCode(readText(file), false, file);
-				addRecent(file);
-			} catch (IOException e) {
-				showError(e, "Can't read "+file.getAbsolutePath());
-			}
+			loadFile(fc.getSelectedFile(), false);
 		}
 
 

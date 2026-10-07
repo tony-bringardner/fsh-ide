@@ -2,9 +2,14 @@ package us.bringardner.fsh.ide;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.awt.Rectangle;
+import java.util.ArrayList;
 import java.util.List;
+
+import org.antlr.v4.runtime.ParserRuleContext;
+import org.antlr.v4.runtime.tree.ParseTree;
 
 import org.junit.jupiter.api.Test;
 
@@ -51,5 +56,22 @@ public class TestFshIDEText {
 		assertNull(FshIDE.parseBounds("10,20,0,0", SCREEN));
 		// on a screen that has since been unplugged
 		assertNull(FshIDE.parseBounds("3000,20,800,600", SCREEN));
+	}
+
+	@Test
+	public void statementTextIsTheFirstLine() {
+		List<FshIDE.CompileError> errors = new ArrayList<>();
+		ParseTree tree = FshIDE.parse("while true\ndo\n  echo x\ndone\n", errors);
+		assertEquals(List.of(), errors);
+		assertEquals("while true ...", FshIDE.statementText((ParserRuleContext) tree));
+	}
+
+	@Test
+	public void longStatementTextIsCutShort() {
+		String echo = "echo "+"x".repeat(500);
+		ParseTree tree = FshIDE.parse(echo, new ArrayList<>());
+		String text = FshIDE.statementText((ParserRuleContext) tree);
+		assertTrue(text.length() < 200, text);
+		assertTrue(text.startsWith("echo xxx") && text.endsWith(" ..."), text);
 	}
 }

@@ -626,6 +626,10 @@ public class EditorPanel extends JPanel {
 		fireBreakpointsChanged();
 	}
 
+	public void addDocumentListener(DocumentListener l) {
+		editorPane.getDocument().addDocumentListener(l);
+	}
+
 	FshIDETextArea getTextArea() {
 		return editorPane;
 	}

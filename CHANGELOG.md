@@ -15,6 +15,19 @@ First release as fsh-ide. Formerly BjlShellIde (`us.bringardner:bjl_shell_ide`).
 - Depends on fsh and parley-files instead of bjl_shell and bjl_file_system.
 - The debug-variables table has a Type column (from this repository's old copy).
 - Fixed the `native` profile's main class (it named a package that didn't exist).
+- Faster and lighter:
+  - The syntax check runs once typing pauses, instead of copying and re-checking the
+    script every 100 ms in a thread per window that kept running after the window closed.
+    The parse tree is only laid out while the debug view is showing.
+  - The unsaved-changes mark in the title is updated as you edit, not polled every second.
+  - While debugging, the editor and variables view are updated only when the script stops
+    at a breakpoint or step, not twice for every statement; the statement log is added in
+    batches, shows each statement's first line, and keeps the last 200,000 characters.
+  - The spelling dictionary is read once, in the background, and shared by all windows.
+  - The window position is saved when the window stops moving, not on every step of a drag.
+  - Files are read, and recent files checked, in the background, so a slow remote file
+    system no longer freezes the window.
+  - Waiting for a script to end no longer polls every 10 ms.
 
 ### Fixed
 - The IDE no longer fails to start on Linux and Windows: it used the macOS-only

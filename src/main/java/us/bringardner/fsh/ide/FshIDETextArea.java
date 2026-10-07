@@ -20,6 +20,7 @@ import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CompletableFuture;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
 
@@ -27,9 +28,11 @@ import javax.swing.Action;
 import javax.swing.ActionMap;
 import javax.swing.InputMap;
 import javax.swing.KeyStroke;
+import javax.swing.SwingUtilities;
 import javax.swing.text.BadLocationException;
 import javax.swing.text.Document;
 
+import org.fife.com.swabunga.spell.engine.SpellDictionary;
 import org.fife.com.swabunga.spell.engine.SpellDictionaryHashMap;
 import org.fife.ui.rsyntaxtextarea.RSyntaxTextArea;
 import org.fife.ui.rsyntaxtextarea.RSyntaxTextAreaEditorKit;
@@ -52,7 +55,27 @@ public class FshIDETextArea extends RSyntaxTextArea {
 	}
 
 	
-	private static SpellingParser createEnglishSpellingParser(InputStream resource) throws IOException {
+	// The English dictionary, read once in the background and shared by every text area
+	private static CompletableFuture<SpellDictionary> dictionary;
+
+	private static synchronized CompletableFuture<SpellDictionary> dictionary() {
+		if( dictionary == null ) {
+			dictionary = CompletableFuture.supplyAsync(()->{
+				try(InputStream in = FshIDETextArea.class.getResourceAsStream("/english_dic.zip")) {
+					if( in == null ) {
+						return null;
+					}
+					return readEnglishDictionary(in);
+				} catch (IOException e) {
+					e.printStackTrace();
+					return null;
+				}
+			});
+		}
+		return dictionary;
+	}
+
+	private static SpellDictionary readEnglishDictionary(InputStream resource) throws IOException {
 
 		List<String> files = new ArrayList<>();
 
@@ -81,7 +104,7 @@ public class FshIDETextArea extends RSyntaxTextArea {
 			zf.close();
 		}
 
-		return new SpellingParser(dict);
+		return dict;
 
 	}
 
@@ -93,14 +116,12 @@ public class FshIDETextArea extends RSyntaxTextArea {
 		setLineWrap(true);
 		setTabSize(4);
 	
-		InputStream in = getClass().getResourceAsStream("/english_dic.zip");
-		SpellingParser parser;
-		try {
-			parser = createEnglishSpellingParser(in);
-			addParser(parser);
-		} catch (IOException e) {
-			e.printStackTrace();
-		}
+		// each text area needs its own parser, but they can share the dictionary
+		dictionary().thenAccept(dict->{
+			if( dict != null ) {
+				SwingUtilities.invokeLater(()->addParser(new SpellingParser(dict)));
+			}
+		});
 
 
 		ActionMap aMap = getActionMap();
