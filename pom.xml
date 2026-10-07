@@ -2,21 +2,46 @@
 	xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
 	xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
 	<modelVersion>4.0.0</modelVersion>
-	<groupId>us.bringardner</groupId>
-	<version>0.1.0-SNAPSHOT</version>
 
-	<artifactId>bjl_shell_ide</artifactId>
+	<!-- fsh-ide: edit, run and debug shell scripts, using fsh as the interpreter -->
+	<groupId>us.bringardner</groupId>
+	<artifactId>fsh-ide</artifactId>
+	<version>1.0.0-SNAPSHOT</version>
+	<name>fsh-ide - editor and debugger for shell scripts</name>
+	<description>Edits, runs and debugs bash/POSIX-style scripts, using fsh (the FileSource Shell)
+		as the interpreter. Formerly us.bringardner:bjl_shell_ide (BjlShellIde).</description>
+	<url>https://github.com/tony-bringardner/fsh-ide</url>
+	<inceptionYear>2004</inceptionYear>
+
+	<licenses>
+		<license>
+			<name>The Apache License, Version 2.0</name>
+			<url>https://www.apache.org/licenses/LICENSE-2.0.txt</url>
+			<distribution>repo</distribution>
+		</license>
+	</licenses>
+	<developers>
+		<developer>
+			<id>tony-bringardner</id>
+			<name>Tony Bringardner</name>
+			<url>https://github.com/tony-bringardner</url>
+		</developer>
+	</developers>
+	<scm>
+		<connection>scm:git:https://github.com/tony-bringardner/fsh-ide.git</connection>
+		<developerConnection>scm:git:ssh://git@github.com/tony-bringardner/fsh-ide.git</developerConnection>
+		<url>https://github.com/tony-bringardner/fsh-ide/tree/master</url>
+	</scm>
+
 	<properties>
 		<project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+		<maven.compiler.release>21</maven.compiler.release>
+		<fsh.version>1.0.0-SNAPSHOT</fsh.version>
+		<parley.version>1.0.0-SNAPSHOT</parley.version>
 	</properties>
-	<description>This project impliments an editor and debugger ro BjlShell
-		scripts. Since BjlShell is intended to be close to bash/posix, th eIDE
-		should work for those environments as well .
-	</description>
-	<name>Bringardner Java Library Shell IDE</name>
 
-	<inceptionYear>2004</inceptionYear>
 	<profiles>
+		<!-- Native binary named fsh-ide: mvn -Pnative package -->
 		<profile>
 			<id>native</id>
 			<build>
@@ -36,103 +61,89 @@
 							</execution>
 						</executions>
 						<configuration>
-							<mainClass>us.bringardner.shell.idx.BjlShellIDE</mainClass>
+							<imageName>fsh-ide</imageName>
+							<mainClass>us.bringardner.fsh.ide.FshIDE</mainClass>
 						</configuration>
 					</plugin>
 				</plugins>
 			</build>
 		</profile>
+		<!-- Bundles the JDBC file system too: mvn -Pjdbc ... -->
+		<profile>
+			<id>jdbc</id>
+			<dependencies>
+				<dependency>
+					<groupId>us.bringardner.parley</groupId>
+					<artifactId>parley-files-jdbc</artifactId>
+					<version>${parley.version}</version>
+					<scope>runtime</scope>
+				</dependency>
+			</dependencies>
+		</profile>
 	</profiles>
 
 	<build>
-		<!-- <sourceDirectory>src</sourceDirectory> -->
+		<!-- Images and the spell-check dictionary; Eclipse has resources/ as a source folder -->
+		<resources>
+			<resource>
+				<directory>resources</directory>
+			</resource>
+		</resources>
+		<plugins>
+			<plugin>
+				<groupId>org.apache.maven.plugins</groupId>
+				<artifactId>maven-jar-plugin</artifactId>
+				<version>3.4.2</version>
+				<configuration>
+					<archive>
+						<manifest>
+							<mainClass>us.bringardner.fsh.ide.FshIDE</mainClass>
+							<addClasspath>true</addClasspath>
+						</manifest>
+					</archive>
+				</configuration>
+			</plugin>
+		</plugins>
 		<pluginManagement>
 			<plugins>
 				<plugin>
 					<groupId>org.apache.maven.plugins</groupId>
 					<artifactId>maven-compiler-plugin</artifactId>
-					<version>3.3</version>
-					<configuration>
-						<source>21</source>
-						<target>21</target>
-					</configuration>
+					<version>3.13.0</version>
 				</plugin>
-
-				<plugin>
-					<groupId>org.apache.maven.plugins</groupId>
-					<artifactId>maven-source-plugin</artifactId>
-					<version>3.1.0</version>
-					<executions>
-						<execution>
-							<id>attach-sources</id>
-							<goals>
-								<goal>jar</goal>
-							</goals>
-						</execution>
-					</executions>
-				</plugin>
-				<plugin>
-					<groupId>org.apache.maven.plugins</groupId>
-					<artifactId>maven-jar-plugin</artifactId>
-					<version>3.3.0</version>
-				</plugin>
-				<plugin>
-					<artifactId>maven-deploy-plugin</artifactId>
-					<version>2.8.2</version>
-				</plugin>
-				<plugin>
-					<groupId>com.github.github</groupId>
-					<artifactId>site-maven-plugin</artifactId>
-					<version>0.12</version>
-					<configuration>
-						<message>Maven artifacts for ${project.version}</message>
-						<noJekyll>true</noJekyll>
-						<outputDirectory>${project.build.directory}</outputDirectory>
-						<branch>refs/heads/${branch-name}</branch>
-						<includes>
-							<include>**/*</include>
-						</includes>
-						<merge>true</merge>
-						<repositoryName>BjlShellIDE</repositoryName>
-						<repositoryOwner>tony-bringardner</repositoryOwner>
-						<server>github</server>
-					</configuration>
-					<executions>
-						<execution>
-							<goals>
-								<goal>site</goal>
-							</goals>
-							<phase>deploy</phase>
-						</execution>
-					</executions>
-				</plugin>
-
-
 				<plugin>
 					<groupId>org.apache.maven.plugins</groupId>
 					<artifactId>maven-surefire-plugin</artifactId>
 					<version>3.5.2</version>
-					<configuration>
-						<test>
-						</test>
-					</configuration>
 				</plugin>
 			</plugins>
 		</pluginManagement>
 	</build>
 
+	<!-- GitHub Packages -->
 	<distributionManagement>
 		<repository>
 			<id>github</id>
 			<name>tony-bringardner</name>
-			<url>https://maven.pkg.github.com/tony-bringardner/BjlShellIDE</url>
+			<url>https://maven.pkg.github.com/tony-bringardner/fsh-ide</url>
 		</repository>
-
 	</distributionManagement>
 
-
 	<dependencies>
+		<!-- The interpreter. Brings parley-files-ftp/-sftp at run time. -->
+		<dependency>
+			<groupId>us.bringardner</groupId>
+			<artifactId>fsh</artifactId>
+			<version>${fsh.version}</version>
+		</dependency>
+		<!-- Used directly: FileSource, the file chooser, the recent-files menu -->
+		<dependency>
+			<groupId>us.bringardner.parley</groupId>
+			<artifactId>parley-files</artifactId>
+			<version>${parley.version}</version>
+		</dependency>
 
+		<!-- The editor -->
 		<dependency>
 			<groupId>com.fifesoft</groupId>
 			<artifactId>autocomplete</artifactId>
@@ -143,12 +154,7 @@
 			<artifactId>spellchecker</artifactId>
 			<version>3.0.0</version>
 		</dependency>
-		<!-- https://mvnrepository.com/artifact/org.antlr/antlr4 -->
-		<dependency>
-			<groupId>org.antlr</groupId>
-			<artifactId>antlr4</artifactId>
-			<version>4.13.2</version>
-		</dependency>
+		<!-- Templates are saved as XML -->
 		<dependency>
 			<groupId>jakarta.xml.bind</groupId>
 			<artifactId>jakarta.xml.bind-api</artifactId>
@@ -160,25 +166,19 @@
 			<version>4.0.3</version>
 			<scope>runtime</scope>
 		</dependency>
+		<!-- The parse-tree views use the ANTLR GUI classes and org.abego.treelayout,
+		     which come with the full antlr4 artifact (fsh itself needs only the runtime) -->
+		<dependency>
+			<groupId>org.antlr</groupId>
+			<artifactId>antlr4</artifactId>
+			<version>4.13.2</version>
+		</dependency>
 
 		<dependency>
-			<groupId>junit</groupId>
-			<artifactId>junit</artifactId>
-			<version>4.12</version>
+			<groupId>org.junit.jupiter</groupId>
+			<artifactId>junit-jupiter</artifactId>
+			<version>5.11.4</version>
 			<scope>test</scope>
 		</dependency>
-		<dependency>
-			<groupId>us.bringardner</groupId>
-			<artifactId>bjl_shell</artifactId>
-			<version>1.0.0-SNAPSHOT</version>
-		</dependency>
-
-		<dependency>
-			<groupId>us.bringardner</groupId>
-			<artifactId>bjl_file_system</artifactId>
-			<version>1.0.2-SNAPSHOT</version>
-		</dependency>
 	</dependencies>
-
-
 </project>
