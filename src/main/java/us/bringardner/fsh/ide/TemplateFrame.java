@@ -12,6 +12,9 @@
 */
 package us.bringardner.fsh.ide;
 
+import us.bringardner.fsh.ide.core.Template;
+import us.bringardner.fsh.ide.core.Configuration;
+
 import java.awt.BorderLayout;
 import java.awt.Dimension;
 import java.awt.EventQueue;

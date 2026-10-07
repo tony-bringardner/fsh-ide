@@ -12,6 +12,8 @@
  */
 package us.bringardner.fsh.ide;
 
+import us.bringardner.fsh.ide.core.LegacyPreferences;
+
 import java.awt.BasicStroke;
 import java.awt.BorderLayout;
 import java.awt.Color;

@@ -12,6 +12,9 @@
 */
 package us.bringardner.fsh.ide;
 
+import us.bringardner.fsh.ide.core.Template;
+import us.bringardner.fsh.ide.core.Configuration;
+
 import java.awt.BorderLayout;
 import java.awt.FlowLayout;
 import java.awt.event.ActionEvent;
@@ -173,7 +176,7 @@ public class TemplatePanel extends JPanel {
 
 		Configuration config = Configuration.getInstance();
 		for(Template t : config.getTemplates()) {
-			t.addCompetion(provider);
+			EditorPanel.addCompletion(provider, t);
 		}
 		
 		SwingUtilities.invokeLater(new Runnable() {

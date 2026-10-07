@@ -12,6 +12,18 @@
  */
 package us.bringardner.fsh.ide;
 
+import us.bringardner.fsh.ide.core.Breakpoint;
+import us.bringardner.fsh.ide.core.Configuration;
+import us.bringardner.fsh.ide.core.CompileError;
+import us.bringardner.fsh.ide.core.DebugSession;
+import us.bringardner.fsh.ide.core.LogBatcher;
+import us.bringardner.fsh.ide.core.RecentFiles;
+import us.bringardner.fsh.ide.core.ScriptDocument;
+import us.bringardner.fsh.ide.core.ScriptParser;
+import us.bringardner.fsh.ide.core.ScriptRun;
+import us.bringardner.fsh.ide.core.ScriptText;
+import us.bringardner.fsh.ide.core.LegacyPreferences;
+
 import java.awt.BorderLayout;
 import java.awt.Color;
 import java.awt.Component;
@@ -22,7 +34,6 @@ import java.awt.FlowLayout;
 import java.awt.GraphicsDevice;
 import java.awt.GraphicsEnvironment;
 import java.awt.KeyboardFocusManager;
-import java.awt.Point;
 import java.awt.Rectangle;
 import java.awt.Taskbar;
 import java.awt.Toolkit;
@@ -36,10 +47,6 @@ import java.awt.event.WindowEvent;
 import java.beans.PropertyChangeEvent;
 import java.beans.PropertyChangeListener;
 import java.io.IOException;
-import java.io.InputStream;
-import java.io.OutputStream;
-import java.io.PrintStream;
-import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -73,35 +80,13 @@ import javax.swing.border.EtchedBorder;
 import javax.swing.border.TitledBorder;
 import javax.swing.text.BadLocationException;
 
-import org.antlr.v4.runtime.BaseErrorListener;
-import org.antlr.v4.runtime.CharStreams;
-import org.antlr.v4.runtime.CommonTokenStream;
-import org.antlr.v4.runtime.ParserRuleContext;
-import org.antlr.v4.runtime.RecognitionException;
-import org.antlr.v4.runtime.Token;
-import org.antlr.v4.runtime.misc.Interval;
-import org.antlr.v4.runtime.Recognizer;
 import org.antlr.v4.runtime.tree.ParseTree;
 
-import us.bringardner.fsh.parser.FileSourceShLexer;
-import us.bringardner.fsh.parser.FileSourceShParser;
 import us.bringardner.parley.files.FileSource;
 import us.bringardner.parley.files.FileSourceChooserDialog;
 import us.bringardner.parley.files.FileSourceFactory;
-import us.bringardner.fsh.Console;
 import us.bringardner.fsh.ConsolePanel;
-import us.bringardner.fsh.ConsoleSignal;
-import us.bringardner.fsh.DebugContext;
-import us.bringardner.fsh.DebugContext.RunState;
-import us.bringardner.fsh.FshList;
 import us.bringardner.fsh.ShellContext;
-import us.bringardner.fsh.ShellContext.LoopControl;
-import us.bringardner.fsh.antlr.Argument;
-import us.bringardner.fsh.antlr.Compare;
-import us.bringardner.fsh.antlr.FileSourceShVisitorImpl;
-import us.bringardner.fsh.antlr.statement.LoopStatement.LoopControlException;
-import us.bringardner.fsh.job.AbstractJob;
-import us.bringardner.fsh.job.ForgroundJob;
 
 
 public class FshIDE extends JFrame  {
@@ -185,7 +170,6 @@ public class FshIDE extends JFrame  {
 
 	protected static final Preferences prefs = LegacyPreferences.forPackage(FshIDE.class);
 
-	private List<String> recentFiles = new ArrayList<String>();
 	private static final long serialVersionUID = 1L;
 
 	private static final String PREF_RECENT_LIST = "RecentList";
@@ -201,187 +185,60 @@ public class FshIDE extends JFrame  {
 
 	private FileSource scriptFile;
 	private FileSource lastFile;	
-	private ExecuteTask currentTask;
+	private ScriptRun currentRun;
 
 
 	private Rectangle lastSize;
 
-	public static class CompileError {
-		public CompileError(int line2, int charPositionInLine, String msg2) {
-			line = line2;
-			col = charPositionInLine;
-			msg = msg2;
+
+	private static final int MAX_LOG_LENGTH = 200_000;
+
+	private final DebugSession.Listener debugListener = new DebugSession.Listener() {
+		@Override
+		public void paused(int line, ShellContext ctx, Map<String, Object> variables) {
+			SwingUtilities.invokeLater(()->{
+				logBatcher.flush();
+				editorPane.removeAllLineHighlights();
+				if( line >= 0 ) {
+					try {
+						editorPane.addLineHighlight(line, Color.green);
+					} catch (BadLocationException e) {
+						showError(e, "Add hilight");
+					}
+				}
+				debugVariablePanel.setContext(editorPane, ctx, variables);
+			});
 		}
-		int line;
-		int col;
-		String code;
-		String msg;
-	}
 
+		@Override
+		public void statement(int line, String text) {
+			logBatcher.add((line+1)+": "+text+"\n");
+		}
 
-	/**
-	 * Script line (1-based) + lineAdjust = editor line (0-based). The script run has "#!fsh"
-	 * added in front, and when only the selection runs it starts at the selection's line.
-	 */
-	private volatile int lineAdjust = -2;
+		@Override
+		public void conditionFailed(Breakpoint bp, int line, Exception error) {
+			showError(error, "Condition evaluation failed (line "+(line+1)+")");
+		}
 
-	private DebugContext debugContext = new DebugContext() {
-
-		public void suspend() {
-			setCurrentState(RunState.StepInto);
-		};
-
-		// the script leaves the line it was paused on
-		private void continuing() {
+		@Override
+		public void resuming() {
 			if( SwingUtilities.isEventDispatchThread()) {
 				editorPane.removeAllLineHighlights();
 			}
 		}
 
-		public void terminate() {		
+		@Override
+		public void terminateRequested() {
 			actionDebug(true);
-		};
-
-		@Override
-		public void resume() {
-			continuing();
-			setCurrentState(RunState.Running);
-		};
-
-		@Override
-		public  synchronized boolean isBreakpoint(Point linePt,ShellContext ctx) {
-			boolean ret = false;
-
-			if( runState == IdeRunstate.Debugging) {
-				int line = linePt.x+lineAdjust;
-				if( line >=0) {
-					Breakpoint bp = editorPane.getBreakpoint(line);
-
-					ret = bp !=null && bp.isEnabled(true);
-					if( ret && bp.isConditional()) {
-						try {
-							String code =  bp.getCondition();
-							code = ctx.console.preProcess(code, ctx);
-							Compare c = FileSourceShVisitorImpl.parseCompare(code);
-							ret = c.evaluate(ctx);
-						} catch (Exception e) {
-							// stops here; reported once per run rather than every time it's reached
-							if( bp.reportConditionError()) {
-								showError(e, "Condition evaluation failed (line "+(line+1)+")");
-							}
-						}
-					}
-				}
-			}
-			return  ret;
 		}
-
-		// the statement about to run, and its context; read when the script pauses
-		private ParserRuleContext current;
-		private ShellContext currentCtx;
-
-		@Override
-		public synchronized void before(ParserRuleContext context,ShellContext ctx) {
-			if( getCurrentState() == RunState.Terminate) {
-				throw new LoopControlException(LoopControl.Break, 100000);
-			}
-			current = context;
-			currentCtx = ctx;
-		}
-
-		@Override
-		public synchronized void setCurrentState(RunState state) {
-			super.setCurrentState(state);
-			// set by the script's thread as it stops at a breakpoint or step: show where it
-			// is and its variables. Nothing is done for the statements in between.
-			if( state == RunState.AtBreakpoint && current != null && currentCtx != null
-					&& runState == IdeRunstate.Debugging) {
-				int line = current.start.getLine()+lineAdjust;
-				Map<String,Object> vars = currentCtx.getVariables();
-				ShellContext ctx = currentCtx;
-				SwingUtilities.invokeLater(()->{
-					flushLog();
-					editorPane.removeAllLineHighlights();
-					if( line >= 0 ) {
-						try {
-							editorPane.addLineHighlight(line, Color.green);
-						} catch (BadLocationException e) {
-							showError(e, "Add hilight");
-						}
-					}
-					debugVariablePanel.setContext(editorPane, ctx, vars);
-				});
-			}
-		}
-
-		@Override
-		public synchronized void after(ParserRuleContext context,ShellContext ctx) {
-			if(runState == IdeRunstate.Debugging && context != null ) {
-				int line = context.start.getLine()+lineAdjust;
-				if( line >=0) {
-					log((line+1)+": "+statementText(context)+"\n");
-				}
-			}
-		}
-
-
-		public void stepOver() {
-			continuing();
-			setCurrentState(RunState.StepOver);
-		};
-
-		public void stepInto() {
-			continuing();
-			setCurrentState(RunState.StepInto);
-		};
 	};
 
-	private static final int MAX_STATEMENT_TEXT = 120;
-	private static final int MAX_LOG_LENGTH = 200_000;
-
-	/** The statement's first line of source, cut short; doesn't build the text of its whole body. */
-	static String statementText(ParserRuleContext context) {
-		Token start = context.start;
-		Token stop = context.stop;
-		if( start == null || stop == null || start.getStartIndex() < 0 || stop.getStopIndex() < start.getStartIndex()) {
-			return "";
-		}
-		int end = Math.min(stop.getStopIndex(), start.getStartIndex()+MAX_STATEMENT_TEXT-1);
-		String ret = start.getInputStream().getText(Interval.of(start.getStartIndex(), end));
-		int nl = ret.indexOf('\n');
-		if( nl >= 0 ) {
-			ret = ret.substring(0, nl)+" ...";
-		} else if( end < stop.getStopIndex()) {
-			ret += " ...";
-		}
-		return ret;
-	}
+	private final DebugSession debugSession = new DebugSession(line->editorPane.getBreakpoint(line), debugListener);
 
 	// Debug log lines from the script's thread, added to logView in batches on the EDT
-	private final StringBuilder pendingLog = new StringBuilder();
-	private boolean logFlushScheduled;
+	private final LogBatcher logBatcher = new LogBatcher(SwingUtilities::invokeLater, this::appendLog);
 
-	private void log(String text) {
-		synchronized (pendingLog) {
-			pendingLog.append(text);
-			if( logFlushScheduled ) {
-				return;
-			}
-			logFlushScheduled = true;
-		}
-		SwingUtilities.invokeLater(this::flushLog);
-	}
-
-	private void flushLog() {
-		String text;
-		synchronized (pendingLog) {
-			text = pendingLog.toString();
-			pendingLog.setLength(0);
-			logFlushScheduled = false;
-		}
-		if( text.isEmpty()) {
-			return;
-		}
+	private void appendLog(String text) {
 		logView.append(text);
 		// keep the end of a long run's log
 		int extra = logView.getDocument().getLength() - MAX_LOG_LENGTH;
@@ -493,6 +350,10 @@ public class FshIDE extends JFrame  {
 
 		register(frame);
 		frame.setVisible(true);
+		IOException configError = Configuration.getLoadError();
+		if( configError != null && ideWindows.size() == 1 ) {
+			frame.showError(configError.getCause() != null ? configError.getCause() : configError, configError.getMessage());
+		}
 	}
 
 	public class ExecutableCode {
@@ -503,189 +364,10 @@ public class FshIDE extends JFrame  {
 	}
 
 
-	public class ExecuteTask implements Runnable {
-		ExecutableCode code = null;
-		// redirect files opened for this run, closed when it ends
-		private final List<java.io.Closeable> opened = new ArrayList<>();
-		private boolean canceled = false;
-		private Console console;
-		private Thread thread;
-		private AbstractJob job;
+	private RecentFiles recent = new RecentFiles();
 
-		public ExecuteTask(ExecutableCode code) {
-			this.code = code;
-		}
-
-		private boolean runSelection() {
-			return useSelectedCode && code.selectedCode!=null;
-		}
-
-		private boolean useSelectedCode;
-
-		private String getCodeToRun() {
-			String codeToRun;
-			if(runSelection()) {
-				codeToRun=code.selectedCode;
-			} else {
-				codeToRun= code.allCode;
-			}
-
-			codeToRun = "#!fsh\n"+codeToRun;
-
-			return codeToRun;
-		}
-
-		private Console getConsoleToRun() throws IOException {
-			console = new Console();
-			console.setStdOut(outputTextArea.getStdOut());
-			console.setStdErr(outputTextArea.getStdErr());
-			// console will use NativeKeyboardReader
-			console.setStdIn(outputTextArea.getStdIn());
-
-			if(!stdIn.isEmpty()) {
-				FileSource file1 = FileSourceFactory.getDefaultFactory().createFileSource(stdIn);
-				InputStream in = file1.getInputStream();
-				opened.add(in);
-				console.setStdIn(in);
-			}
-			if(!stdOut.isEmpty()) {
-				FileSource file1 = FileSourceFactory.getDefaultFactory().createFileSource(stdOut);
-				PrintStream out = new PrintStream(file1.getOutputStream(), true, StandardCharsets.UTF_8);
-				opened.add(out);
-				console.setStdOut(out);
-			}
-			if(!stdErr.isEmpty()) {
-				FileSource file1 = FileSourceFactory.getDefaultFactory().createFileSource(stdErr);
-				PrintStream err = new PrintStream(file1.getOutputStream(), true, StandardCharsets.UTF_8);
-				opened.add(err);
-				console.setStdErr(err);
-			}
-			if( debugContext !=null ) {
-				debugContext.setCurrentState(RunState.Running);
-				console.setDebugContext(debugContext);
-			}
-
-			return console;
-		}
-
-		// read from the fields on the EDT when the task is made
-		private String arguments;
-		private String stdIn;
-		private String stdOut;
-		private String stdErr;
-
-		private void closeRedirects() {
-			for(java.io.Closeable c : opened) {
-				try {
-					c.close();
-				} catch (IOException e) {
-					showError(e, "Can't close redirect file");
-				}
-			}
-			opened.clear();
-		}
-
-		@Override 
-		public void run()  {			
-			try {
-				execute();
-			} finally {
-				closeRedirects();
-			}
-		}
-
-		private void execute()  {			
-
-			String codeToRun = getCodeToRun().trim();
-			if( !codeToRun.isEmpty()) {
-				Console console = null;						
-				try {				
-					console = getConsoleToRun();
-				} catch (Exception e) {
-
-					showError(e, "");
-				}
-
-				if( console != null ) {
-					FshList args = new FshList();
-
-					args.add(new Argument( scriptFile!=null?scriptFile.getAbsolutePath():"fsh"));
-					for (String a : splitArguments(arguments)) {
-						args.add( new Argument(a));
-					}
-
-					console.setPositionalParameters(true, args);
-					ShellContext sc = new ShellContext(console);
-
-					job = new ForgroundJob(sc, getCodeToRun());
-					job.start();
-
-					while(job.isAlive()) {
-						try {
-							job.join(0);
-						} catch (InterruptedException e) {
-							// cancel() interrupts; the kill signal it sent ends the job
-						}
-					}
-					int exitCode = job.getExitCode();
-					log("exitCode = "+exitCode+"\n");
-					if( runState == IdeRunstate.Debugging ) {
-						// the variables as the script left them
-						Map<String,Object> vars = sc.getVariables();
-						SwingUtilities.invokeLater(()->debugVariablePanel.setContext(editorPane, sc, vars));
-					}
-				}
-
-				SwingUtilities.invokeLater(()->{
-					stopTask();	
-				});
-			}
-		}
-
-		public synchronized boolean isRunning () {
-			boolean ret = job !=null && job.isAlive();
-			return ret;
-		}
-
-		public synchronized boolean isCancelled() {
-			return canceled;
-		}
-
-		public synchronized  void cancel() {
-
-			canceled = true;
-			if( job !=null ) {
-				job.handleSignal(ConsoleSignal.Kill);
-			}
-
-			thread.interrupt();
-			if( debugContext != null ) {
-				debugContext.setCurrentState(RunState.Terminate);
-				editorPane.removeAllLineHighlights();
-			}
-		}
-
-	};
-
-	private List<String> readRecentList() {
-		List<String> ret = new ArrayList<String>();
-		String tmp = prefs.get(PREF_RECENT_LIST, null);
-		if( tmp != null ) {
-			for(String name : tmp.split("\n")) {
-				ret.add(name);
-			}
-		}
-
-		return ret;
-	}
-
-	private void saveRecentList(List<String> list) {
-		StringBuffer buf = new StringBuffer();
-		for(String name : list) {
-			buf.append(name);
-			buf.append('\n');
-		}
-		prefs.put(PREF_RECENT_LIST, buf.toString());
+	private void saveRecentList() {
+		prefs.put(PREF_RECENT_LIST, recent.format());
 		try {
 			prefs.flush();
 		} catch (Exception e) {
@@ -727,7 +409,7 @@ public class FshIDE extends JFrame  {
 
 	private void buildRecentMenu() {
 		openRecentMenu.removeAll();
-		for(String name : recentFiles) {
+		for(String name : recent.list()) {
 			JMenuItem item = new JMenuItem(name);
 			item.addActionListener((e)->actionOpenRecent(name));
 			openRecentMenu.add(item);
@@ -750,21 +432,13 @@ public class FshIDE extends JFrame  {
 	 * remote file systems. One that can't be checked now (unavailable) is kept.
 	 */
 	private void pruneRecentFiles() {
-		List<String> names = new ArrayList<>(recentFiles);
+		List<String> names = new ArrayList<>(recent.list());
 		BACKGROUND.execute(()->{
-			List<String> missing = new ArrayList<>();
-			for(String name : names) {
-				try {
-					if( !FileSourceFactory.getDefaultFactory().createFileSource(name).exists()) {
-						missing.add(name);
-					}
-				} catch (IOException e) {
-				}
-			}
+			List<String> missing = RecentFiles.findMissing(names);
 			if( !missing.isEmpty()) {
 				SwingUtilities.invokeLater(()->{
-					if( recentFiles.removeAll(missing)) {
-						saveRecentList(recentFiles);
+					if( recent.removeAll(missing)) {
+						saveRecentList();
 						buildRecentMenu();
 					}
 				});
@@ -787,7 +461,7 @@ public class FshIDE extends JFrame  {
 		int edits = editCount;
 		BACKGROUND.execute(()->{
 			try {
-				String code = readText(file);
+				String code = ScriptText.read(file);
 				SwingUtilities.invokeLater(()->{
 					if( !isDisplayable() || (editCount != edits && !okToDiscard())) {
 						return;
@@ -848,7 +522,7 @@ public class FshIDE extends JFrame  {
 
 	private void checkSyntax() {
 		// not trimmed: error line numbers must match the editor's
-		String code = clean(editorPane.getText());
+		String code = ScriptText.clean(editorPane.getText());
 		if( code.equals(lastCheckedCode)) {
 			return;
 		}
@@ -862,7 +536,7 @@ public class FshIDE extends JFrame  {
 			List<CompileError> errors = new ArrayList<>();
 			ParseTree tree;
 			try {
-				tree = parse(code, errors);
+				tree = ScriptParser.parse(code, errors);
 			} catch (RuntimeException e) {
 				return;
 			}
@@ -873,7 +547,7 @@ public class FshIDE extends JFrame  {
 				StringBuilder buf = new StringBuilder();
 				editorPane.clearErrorMarkers();
 				for(CompileError e : errors) {
-					buf.append(""+e.line+","+e.col+" "+e.msg+"\n");
+					buf.append(e).append('\n');
 					editorPane.addErrorMarker(e);
 				}
 				pendingTree = tree;
@@ -890,26 +564,6 @@ public class FshIDE extends JFrame  {
 			pendingTree = null;
 			pendingTreeErrors = null;
 		}
-	}
-
-	static ParseTree parse(String code, List<CompileError> errors) {
-		ShellContext ctx = new ShellContext(new Console());
-		code = ctx.console.preProcess(code, ctx);
-
-		BaseErrorListener listener = new BaseErrorListener() {
-			@Override
-			public void syntaxError(Recognizer<?, ?> recognizer, Object offendingSymbol, 
-					int line,int charPositionInLine, String msg, RecognitionException e) {
-				errors.add(new CompileError(line,charPositionInLine,msg));
-			}
-		};
-		FileSourceShLexer lexer = new FileSourceShLexer(CharStreams.fromString(code));
-		lexer.removeErrorListeners();
-		lexer.addErrorListener(listener);
-		FileSourceShParser parser = new FileSourceShParser(new CommonTokenStream(lexer));
-		parser.removeErrorListeners();
-		parser.addErrorListener(listener);
-		return parser.script();
 	}
 
 	/** Saves the window's bounds once it has stopped moving, not for every step of a drag. */
@@ -936,7 +590,7 @@ public class FshIDE extends JFrame  {
 	public FshIDE() {
 		editorPane.setHighlightCurrentLine(false);
 
-		recentFiles = readRecentList();		
+		recent = RecentFiles.parse(prefs.get(PREF_RECENT_LIST, null));
 
 		setBounds(100, 100, 1580, 1000);		
 		contentPane = new JPanel();
@@ -1174,7 +828,7 @@ public class FshIDE extends JFrame  {
 		stdErrTextField.setColumns(10);
 		panel_1_1.add(stdErrTextField);
 
-		debugControlPanel = new DebugControlPanel(debugContext);
+		debugControlPanel = new DebugControlPanel(debugSession);
 		menuPanel.add(debugControlPanel);
 		debugControlPanel.setVisible(false);
 		FlowLayout flowLayout_1 = (FlowLayout) debugControlPanel.getLayout();
@@ -1305,14 +959,12 @@ public class FshIDE extends JFrame  {
 		}
 
 		pruneRecentFiles();
-		if( recentFiles != null && recentFiles.size()>0) {
-			String name = recentFiles.get(0);
-			if( name !=null && !name.isEmpty()) {
-				try {
-					loadFile(FileSourceFactory.getDefaultFactory().createFileSource(name), autoExecuteCheckItem.isSelected());
-				} catch (IOException ex) {
-					showError(ex, "Can't read last edited file = "+name);
-				}
+		String name = recent.first();
+		if( name != null ) {
+			try {
+				loadFile(FileSourceFactory.getDefaultFactory().createFileSource(name), autoExecuteCheckItem.isSelected());
+			} catch (IOException ex) {
+				showError(ex, "Can't read last edited file = "+name);
 			}
 		}
 	}
@@ -1434,87 +1086,20 @@ public class FshIDE extends JFrame  {
 
 	private ExecutableCode getExecutableCode() {
 		ExecutableCode ret = new ExecutableCode();
-		ret.allCode = clean(editorPane.getText());
+		ret.allCode = ScriptText.clean(editorPane.getText());
 
-		ret.selectedCode = clean(editorPane.getSelectedText());
+		ret.selectedCode = ScriptText.clean(editorPane.getSelectedText());
 		if( ret.selectedCode != null ) {
 			ret.selectedLine = editorPane.getSelectionStartLine();
 		}
 		return ret;
 	}
 
-	/**
-	 * text without the invisible characters that come with text copied from web pages and
-	 * documents and break scripts: control characters other than tab, newline and carriage
-	 * return, zero-width spaces and byte order marks. A non-breaking space becomes a space.
-	 * Other characters, including non-ASCII ones, are kept. null stays null.
-	 */
-	static String clean(String text) {
-		if( text == null ) {
-			return null;
-		}
-		StringBuilder ret = new StringBuilder(text.length());
-		for(int idx=0,sz=text.length(); idx < sz; idx++) {
-			char c = text.charAt(idx);
-			if( c == '\u00a0') {
-				ret.append(' ');
-			} else if( c == '\t' || c == '\n' || c == '\r'
-					|| (c >= ' ' && c != 0x7f && !(c >= 0x80 && c < 0xa0)
-					&& c != '\u200b' && c != '\u200c' && c != '\u200d' && c != '\ufeff')) {
-				ret.append(c);
-			}
-		}
-		return ret.toString();
-	}
-
-	/** Script arguments separated by white space; none for a blank string. */
-	static List<String> splitArguments(String text) {
-		List<String> ret = new ArrayList<>();
-		if( text != null ) {
-			for(String a : text.trim().split("\\s+")) {
-				if( !a.isEmpty()) {
-					ret.add(a);
-				}
-			}
-		}
-		return ret;
-	}
-
-	private static final String SCRIPT_ARGS="#BjlIdeScriptArgs=";
-	private static final String SCRIPT_IN  ="#BjlIdeScriptIn=";
-	private static final String SCRIPT_OUT ="#BjlIdeScriptOut=";
-	private static final String SCRIPT_ERR ="#BjlIdeScriptErr=";
-
+	/** The script as it would be saved. */
 	protected String getCode() {		
-
-		StringBuilder buf = new StringBuilder();
-		String args = argumentsTextField.getText().trim();
-
-		if(!args.isEmpty()) {
-			buf.append(SCRIPT_ARGS+args+"\n");
-		}
-
-		args = stdInTextField.getText().trim();		
-		if(!args.isEmpty()) {
-			buf.append(SCRIPT_IN+args+"\n");
-		}
-		args = stdOutTextField.getText().trim();		
-		if(!args.isEmpty()) {
-			buf.append(SCRIPT_OUT+args+"\n");
-		}
-
-		args = stdErrTextField.getText().trim();		
-		if(!args.isEmpty()) {
-			buf.append(SCRIPT_ERR+args+"\n");
-		}
-
-		String ret = buf+editorPane.getText();
-
-		return ret;
+		return new ScriptDocument(editorPane.getText(), argumentsTextField.getText(),
+				stdInTextField.getText(), stdOutTextField.getText(), stdErrTextField.getText()).toText();
 	}
-
-
-	int count = 0;
 
 	// -Xss4m
 	private long stackSize=((1024*1024));
@@ -1541,29 +1126,26 @@ public class FshIDE extends JFrame  {
 
 	private void stopTask () {
 		if( SwingUtilities.isEventDispatchThread()) {
-			ExecuteTask task = currentTask;
-			if(task !=null && task.isRunning() ) {
-				task.cancel();
-
+			ScriptRun run = currentRun;
+			if(run !=null && run.isRunning() ) {
+				run.cancel();
+				editorPane.removeAllLineHighlights();
 
 				new Thread(()->{
-					while(task.thread.isAlive()) {
-						try {
-							task.thread.join(1000);
-						} catch (InterruptedException e) {
-						}
-						if( task.thread.isAlive()) {
+					try {
+						while(!run.join(1000)) {
 							SwingUtilities.invokeLater(()->{
 								outputTextArea.getStdOut().println("Waiting for task to complete\n");
 							});
-							task.thread.interrupt();
+							run.interrupt();
 						}
+					} catch (InterruptedException e) {
 					}
 
 					// only if a new run hasn't started meanwhile
 					SwingUtilities.invokeLater(()->{
-						if( currentTask == task ) {
-							currentTask = null;
+						if( currentRun == run ) {
+							currentRun = null;
 						}
 					});
 
@@ -1577,6 +1159,7 @@ public class FshIDE extends JFrame  {
 			executeButton.setVisible(true);
 			debugControlPanel.setVisible(false);
 			runState = IdeRunstate.Idel;
+			debugSession.setActive(false);
 			editorPane.setHighlightCurrentLine(false);
 			actionShowDebugView();
 		} else {
@@ -1599,31 +1182,45 @@ public class FshIDE extends JFrame  {
 			executeButton.setIcon(new ImageIcon(FshIDE.class.getResource("/img/Stop.png")));
 
 			scriptArgPanel.setVisible(false);
-			synchronized (pendingLog) {
-				pendingLog.setLength(0);
-			}
+			logBatcher.clear();
 			logView.setText("");
 			outputTextArea.clear();
 			if( state == IdeRunstate.Debugging) {
 				debugControlPanel.setVisible(true);
 			}
-			currentTask = new ExecuteTask(code);
-			currentTask.useSelectedCode = useSelectedCodeCheckItem.isSelected();
-			currentTask.arguments = argumentsTextField.getText();
-			currentTask.stdIn = stdInTextField.getText().trim();
-			currentTask.stdOut = stdOutTextField.getText().trim();
-			currentTask.stdErr = stdErrTextField.getText().trim();
-			lineAdjust = -2 + (currentTask.runSelection() ? code.selectedLine : 0);
-
-			Thread th = new Thread(null,currentTask,"ExecuteThread",stackSize);
-			th.setDaemon(true);
-			th.setName("Execute thread "+(++count));
-			currentTask.thread = th;
+			boolean selection = useSelectedCodeCheckItem.isSelected() && code.selectedCode != null;
+			debugSession.setFirstLine(selection ? code.selectedLine : 0);
+			debugSession.setActive(state == IdeRunstate.Debugging);
+			currentRun = new ScriptRun(selection ? code.selectedCode : code.allCode, this::runFinished)
+					.scriptName(scriptFile != null ? scriptFile.getAbsolutePath() : "fsh")
+					.arguments(argumentsTextField.getText())
+					.redirects(stdInTextField.getText(), stdOutTextField.getText(), stdErrTextField.getText())
+					.console(outputTextArea.getStdIn(), outputTextArea.getStdOut(), outputTextArea.getStdErr())
+					.debug(debugSession)
+					.stackSize(stackSize);
 			runState = state;
-			th.start();
+			currentRun.start();
 		} else {
 			SwingUtilities.invokeLater(()->startTask(state));
 		}
+	}
+
+	/** On the run's thread. */
+	private void runFinished(ScriptRun run, int exitCode, ShellContext ctx, Exception error) {
+		if( error != null ) {
+			showError(error, "");
+		}
+		logBatcher.add("exitCode = "+exitCode+"\n");
+		if( ctx != null && debugSession.isActive()) {
+			// the variables as the script left them
+			Map<String,Object> vars = ctx.getVariables();
+			SwingUtilities.invokeLater(()->debugVariablePanel.setContext(editorPane, ctx, vars));
+		}
+		SwingUtilities.invokeLater(()->{
+			if( currentRun == run ) {
+				stopTask();
+			}
+		});
 	}
 
 
@@ -1641,36 +1238,16 @@ public class FshIDE extends JFrame  {
 
 	}
 
-	private static String readText(FileSource file) throws IOException {
-		try(InputStream in = file.getInputStream()) {
-			return new String(in.readAllBytes(), StandardCharsets.UTF_8);
-		}
-	}
-
 	/** Shows code from file (null for a new script). */
 	protected void setCode(String code,boolean execute, FileSource file) {
 		scriptFile = file;
-		argumentsTextField.setText("");
-		stdInTextField.setText("");
-		stdOutTextField.setText("");
-		stdErrTextField.setText("");
-		String [] lines = code.split("\n");
-		StringBuilder buf = new StringBuilder();
-		for(String line:lines) {
-			if( line.startsWith(SCRIPT_ARGS)) {
-				argumentsTextField.setText(line.substring(SCRIPT_ARGS.length()));
-			} else if( line.startsWith(SCRIPT_IN)) {
-				stdInTextField.setText(line.substring(SCRIPT_IN.length()));
-			} else if( line.startsWith(SCRIPT_OUT)) {
-				stdOutTextField.setText(line.substring(SCRIPT_OUT.length()));
-			} else if( line.startsWith(SCRIPT_ERR)) {
-				stdErrTextField.setText(line.substring(SCRIPT_ERR.length()));
-			} else  {
-				buf.append(line+"\n");
-			}
-		}
+		ScriptDocument doc = ScriptDocument.parse(code);
+		argumentsTextField.setText(doc.arguments());
+		stdInTextField.setText(doc.stdIn());
+		stdOutTextField.setText(doc.stdOut());
+		stdErrTextField.setText(doc.stdErr());
 
-		editorPane.setText(buf.toString(),scriptFile);
+		editorPane.setText(doc.body(),scriptFile);
 		// what saving it now would write, so it doesn't count as changed
 		original = getCode();
 		updateTitle();
@@ -1688,19 +1265,13 @@ public class FshIDE extends JFrame  {
 			if( scriptFile == null) {
 				actionSaveAs();
 			} else {
-				write(scriptFile, code);
+				ScriptText.write(scriptFile, code);
 				original = code;
 				addRecent(scriptFile);
 				updateTitle();
 			}
 		} catch (IOException e) {
 			showError(e, "Can't save");
-		}
-	}
-
-	private void write(FileSource file, String code) throws IOException {
-		try (OutputStream out = file.getOutputStream()){
-			out.write(clean(code).getBytes(StandardCharsets.UTF_8));
 		}
 	}
 
@@ -1737,20 +1308,8 @@ public class FshIDE extends JFrame  {
 	}
 
 	private void addRecent(FileSource file2) {
-		String path = file2.getAbsolutePath();
-
-		int idx = recentFiles.indexOf(path);
-		if( idx >=0 ) {
-			recentFiles.remove(idx);
-		}
-		recentFiles.add(0, path);
-
-		int mx = Configuration.getInstance().getMaxRecent();
-
-		while(recentFiles.size()>mx) {
-			recentFiles.remove(mx);
-		}
-		saveRecentList(recentFiles);
+		recent.add(file2.getAbsolutePath(), Configuration.getInstance().getMaxRecent());
+		saveRecentList();
 		buildRecentMenu();
 
 

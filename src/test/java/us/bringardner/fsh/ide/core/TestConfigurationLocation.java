@@ -1,4 +1,4 @@
-package us.bringardner.fsh.ide;
+package us.bringardner.fsh.ide.core;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;

@@ -12,6 +12,8 @@
 */
 package us.bringardner.fsh.ide;
 
+import us.bringardner.fsh.ide.core.Breakpoint;
+
 import java.awt.BorderLayout;
 import java.awt.Component;
 import java.awt.FlowLayout;

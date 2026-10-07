@@ -10,13 +10,10 @@
 *	on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for 
 *	the specific language governing permissions and limitations under the License.
 */
-package us.bringardner.fsh.ide;
+package us.bringardner.fsh.ide.core;
 
 import java.util.Objects;
 
-import org.fife.ui.autocomplete.DefaultCompletionProvider;
-import org.fife.ui.autocomplete.ShorthandCompletion;
-import org.fife.ui.autocomplete.TemplateCompletion;
 
 
 
@@ -41,17 +38,6 @@ public class Template {
 	}
 
 
-	public void addCompetion(DefaultCompletionProvider provider) {
-		String d = description == null ? name : description.isBlank() ? name : description;
-
-		if( code == null || code.isBlank()) {
-			provider.addCompletion(new ShorthandCompletion(provider,name,name,d));
-		} else if( code.indexOf("$") >= 0) {
-			provider.addCompletion(new TemplateCompletion(provider, name,d,code));
-		} else {
-			provider.addCompletion(new ShorthandCompletion(provider,name,code,d));
-		}
-	}
 
 	public String getName() {
 		return name;

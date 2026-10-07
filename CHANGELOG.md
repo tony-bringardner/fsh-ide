@@ -15,6 +15,11 @@ First release as fsh-ide. Formerly BjlShellIde (`us.bringardner:bjl_shell_ide`).
 - Depends on fsh and parley-files instead of bjl_shell and bjl_file_system.
 - The debug-variables table has a Type column (from this repository's old copy).
 - Fixed the `native` profile's main class (it named a package that didn't exist).
+- The IDE's logic is in a new package, `us.bringardner.fsh.ide.core`, that uses no UI
+  toolkit, so a JavaFX (or other) front end can share it: running scripts (`ScriptRun`), the
+  debugger (`DebugSession`), the settings saved in scripts (`ScriptDocument`), recent files,
+  the syntax check, settings and templates. `Breakpoint`, `Template`, `Configuration` and
+  `LegacyPreferences` moved there from `us.bringardner.fsh.ide`; the Swing IDE uses the core.
 - Faster and lighter:
   - The syntax check runs once typing pauses, instead of copying and re-checking the
     script every 100 ms in a thread per window that kept running after the window closed.
@@ -49,6 +54,9 @@ First release as fsh-ide. Formerly BjlShellIde (`us.bringardner:bjl_shell_ide`).
   be evaluated is reported once per run instead of every time it's reached.
 - Starting no longer fails on unreadable saved window bounds, and a window saved on a
   screen that's since been unplugged opens on the main screen.
+- A script that runs `exit`, or a run that's stopped, no longer closes the IDE.
+- A script waiting for input (`read`) can be given it by typing in the output console, and
+  can be stopped (it used to wait for ever). Needs fsh's new `ConsoleIO`.
 - Ctrl+Shift+Add expands all folds (it collapsed them). Alt+F before Ctrl+F no longer fails.
 
 ### Still works

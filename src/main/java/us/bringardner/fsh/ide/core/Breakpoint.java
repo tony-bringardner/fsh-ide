@@ -10,16 +10,14 @@
 *	on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for 
 *	the specific language governing permissions and limitations under the License.
 */
-package us.bringardner.fsh.ide;
+package us.bringardner.fsh.ide.core;
 
-import org.fife.ui.rtextarea.GutterIconInfo;
 
 public class Breakpoint {
 	private static int instanceCount=-1;
 	private int id;
-	private GutterIconInfo tag;
 	private boolean enabled=true;
-	// kept up to date by EditorPanel as the text is edited; read by the script thread
+	// kept up to date by the editor as the text is edited (0-based); read by the script thread
 	private volatile int line=-1;
 	private String code="";
 	private boolean isConditional=false;
@@ -36,19 +34,9 @@ public class Breakpoint {
 		}		
 	}
 	
-	public Breakpoint(GutterIconInfo tag) {
-		this();
-		this.tag = tag;
-	}
 	
-	public GutterIconInfo getTag() {
-		return tag;
-	}
 
 
-	public void setTag(GutterIconInfo tag) {
-		this.tag = tag;
-	}
 
 
 	public int getId() {
@@ -83,9 +71,6 @@ public class Breakpoint {
 	}
 	public void setEnabled(boolean enabled) {
 		this.enabled = enabled;
-	}
-	public int getOffset() {
-		return tag.getMarkedOffset();
 	}
 	
 	public int getLine() {

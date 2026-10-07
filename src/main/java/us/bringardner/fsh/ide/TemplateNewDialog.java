@@ -12,6 +12,8 @@
 */
 package us.bringardner.fsh.ide;
 
+import us.bringardner.fsh.ide.core.Template;
+
 import java.awt.BorderLayout;
 import java.awt.FlowLayout;
 import java.awt.event.ActionEvent;

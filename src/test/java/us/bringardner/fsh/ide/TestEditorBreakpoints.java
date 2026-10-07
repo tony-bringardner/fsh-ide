@@ -1,5 +1,8 @@
 package us.bringardner.fsh.ide;
 
+import us.bringardner.fsh.ide.core.Breakpoint;
+import us.bringardner.fsh.ide.core.CompileError;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
@@ -127,9 +130,9 @@ public class TestEditorBreakpoints {
 		onEdt(()->{
 			EditorPanel editor = new EditorPanel();
 			editor.setText("echo a\nfi\n", null);
-			editor.addErrorMarker(new FshIDE.CompileError(2, 0, "unexpected fi"));
+			editor.addErrorMarker(new CompileError(2, 0, "unexpected fi"));
 			// lines that aren't there are ignored
-			editor.addErrorMarker(new FshIDE.CompileError(99, 0, "past the end"));
+			editor.addErrorMarker(new CompileError(99, 0, "past the end"));
 			assertEquals("unexpected fi", editor.errorAt(1));
 			assertNull(editor.errorAt(0));
 			editor.clearErrorMarkers();

@@ -12,10 +12,17 @@
 */
 package us.bringardner.fsh.ide;
 
+import us.bringardner.fsh.ide.core.Breakpoint;
+import us.bringardner.fsh.ide.core.Template;
+import us.bringardner.fsh.ide.core.Configuration;
+import us.bringardner.fsh.ide.core.CompileError;
+import us.bringardner.fsh.ide.core.ScriptText;
+
 import java.awt.BorderLayout;
 import java.awt.Component;
 import java.util.Collections;
 import java.util.Iterator;
+import java.util.LinkedHashMap;
 import javax.swing.event.DocumentEvent;
 import javax.swing.event.DocumentListener;
 import org.fife.ui.rtextarea.Gutter;
@@ -54,11 +61,11 @@ import javax.swing.text.Document;
 import org.fife.ui.autocomplete.AutoCompletion;
 import org.fife.ui.autocomplete.DefaultCompletionProvider;
 import org.fife.ui.autocomplete.ShorthandCompletion;
+import org.fife.ui.autocomplete.TemplateCompletion;
 import org.fife.ui.rsyntaxtextarea.SyntaxScheme;
 import org.fife.ui.rtextarea.RTextScrollPane;
 
 import us.bringardner.parley.files.FileSource;
-import us.bringardner.fsh.ide.FshIDE.CompileError;
 
 
 
@@ -95,7 +102,7 @@ public class EditorPanel extends JPanel {
 				//System.out.println("df="+df.getClass());
 				if (df instanceof String) {
 					String str = (String) df;
-					String cleaned = FshIDE.clean(str);
+					String cleaned = ScriptText.clean(str);
 					if( !cleaned.equals(str)) {
 						cb.setContents(new StringSelection(cleaned),null);
 					}
@@ -116,7 +123,7 @@ public class EditorPanel extends JPanel {
 
 	private Gutter gutter;
 	// Edited on the EDT only. Each breakpoint's gutter icon tracks its line as the text changes.
-	private final List<Breakpoint> breakpointList = new ArrayList<>();
+	private final Map<Breakpoint,GutterIconInfo> breakpointTags = new LinkedHashMap<>();
 	// Line -> breakpoint, rebuilt on the EDT after each edit; the script thread reads it
 	private volatile Map<Integer,Breakpoint> breakpoints = Collections.emptyMap();
 	private final List<GutterIconInfo> errorTags = new ArrayList<>();
@@ -201,23 +208,23 @@ public class EditorPanel extends JPanel {
 			if( code.isEmpty()) {
 				return null;
 			}
-			bp = new Breakpoint(gutter.addLineTrackingIcon(line, breakpointIcon));
+			GutterIconInfo tag = gutter.addLineTrackingIcon(line, breakpointIcon);
+			bp = new Breakpoint();
+			breakpointTags.put(bp, tag);
 		} catch (BadLocationException e) {
 			return null;
 		}
 		bp.setCode(code);
 		bp.setLine(line);
-		breakpointList.add(bp);
 		refreshBreakpoints();
 		fireBreakpointsChanged();
 		return bp;
 	}
 
 	public void removeBreakpoint(Breakpoint bp) {
-		if( breakpointList.remove(bp)) {
-			if( bp.getTag() != null ) {
-				gutter.removeTrackingIcon(bp.getTag());
-			}
+		GutterIconInfo tag = breakpointTags.remove(bp);
+		if( tag != null ) {
+			gutter.removeTrackingIcon(tag);
 			refreshBreakpoints();
 			fireBreakpointsChanged();
 		}
@@ -237,16 +244,17 @@ public class EditorPanel extends JPanel {
 	private boolean refreshBreakpoints() {
 		boolean changed = false;
 		Map<Integer,Breakpoint> map = new TreeMap<>();
-		for(Iterator<Breakpoint> it = breakpointList.iterator(); it.hasNext(); ) {
-			Breakpoint bp = it.next();
+		for(Iterator<Map.Entry<Breakpoint,GutterIconInfo>> it = breakpointTags.entrySet().iterator(); it.hasNext(); ) {
+			Map.Entry<Breakpoint,GutterIconInfo> e = it.next();
+			Breakpoint bp = e.getKey();
 			int line;
 			try {
-				line = editorPane.getLineOfOffset(bp.getOffset());
-			} catch (BadLocationException e) {
+				line = editorPane.getLineOfOffset(e.getValue().getMarkedOffset());
+			} catch (BadLocationException ex) {
 				line = -1;
 			}
 			if( line < 0 || map.containsKey(line)) {
-				gutter.removeTrackingIcon(bp.getTag());
+				gutter.removeTrackingIcon(e.getValue());
 				it.remove();
 				changed = true;
 				continue;
@@ -459,7 +467,7 @@ public class EditorPanel extends JPanel {
 	}
 
 	private void textChanged() {
-		if( !breakpointList.isEmpty() && refreshBreakpoints()) {
+		if( !breakpointTags.isEmpty() && refreshBreakpoints()) {
 			fireBreakpointsChanged();
 		}
 	}
@@ -507,18 +515,8 @@ public class EditorPanel extends JPanel {
 		};
 
 		
-		Configuration config = null;
-		try {
-			config = Configuration.getInstance();	
-		} catch (Throwable e) {
-			System.out.println("Configuration.getInstance e="+e);
-			e.printStackTrace();
-			System.exit(0);
-		}
-		
-		
-		for(Template t : config.getTemplates()) {
-			t.addCompetion(provider);
+		for(Template t : Configuration.getInstance().getTemplates()) {
+			addCompletion(provider, t);
 		}
 
 
@@ -541,6 +539,21 @@ public class EditorPanel extends JPanel {
 			}
 		});
 
+	}
+
+	/** Adds t to provider: a template if its code has \${...} fields, otherwise a shorthand. */
+	static void addCompletion(DefaultCompletionProvider provider, Template t) {
+		String name = t.getName();
+		String code = t.getCode();
+		String description = t.getDescription();
+		String d = description == null || description.isBlank() ? name : description;
+		if( code == null || code.isBlank()) {
+			provider.addCompletion(new ShorthandCompletion(provider,name,name,d));
+		} else if( code.indexOf("$") >= 0) {
+			provider.addCompletion(new TemplateCompletion(provider, name,d,code));
+		} else {
+			provider.addCompletion(new ShorthandCompletion(provider,name,code,d));
+		}
 	}
 
 	private boolean highlightMatching(char start,char end, int pos, int inc,Document doc,boolean select)  {
@@ -609,7 +622,7 @@ public class EditorPanel extends JPanel {
 		editorPane.setCaretPosition(0);
 		editorPane.removeAllLineHighlights();
 		gutter.removeAllTrackingIcons();
-		breakpointList.clear();
+		breakpointTags.clear();
 		errorTags.clear();
 		breakpoints = Collections.emptyMap();
 		scriptDir = scriptFile;

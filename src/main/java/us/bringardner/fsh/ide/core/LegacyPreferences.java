@@ -1,4 +1,4 @@
-package us.bringardner.fsh.ide;
+package us.bringardner.fsh.ide.core;
 
 import java.util.prefs.BackingStoreException;
 import java.util.prefs.Preferences;
@@ -9,7 +9,7 @@ import java.util.prefs.Preferences;
  * time a class asks for its node and the new node is empty, the old values are copied
  * over, so the move doesn't lose them. The old node is left as it is.
  */
-final class LegacyPreferences {
+public final class LegacyPreferences {
 
 	/** The node userNodeForPackage gave the IDE classes before the rename. */
 	static final String OLD_NODE = "/us/bringardner/shell/ide";
@@ -18,7 +18,7 @@ final class LegacyPreferences {
 	}
 
 	/** Preferences.userNodeForPackage(c), filled from the old node the first time. */
-	static Preferences forPackage(Class<?> c) {
+	public static Preferences forPackage(Class<?> c) {
 		Preferences now = Preferences.userNodeForPackage(c);
 		copyIfEmpty(Preferences.userRoot(), OLD_NODE, now);
 		return now;

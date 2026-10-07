@@ -10,9 +10,8 @@
  *	on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for 
  *	the specific language governing permissions and limitations under the License.
  */
-package us.bringardner.fsh.ide;
+package us.bringardner.fsh.ide.core;
 
-import java.awt.GraphicsEnvironment;
 import java.io.File;
 import java.io.IOException;
 import java.nio.file.AtomicMoveNotSupportedException;
@@ -24,9 +23,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.TreeMap;
 
-import javax.swing.JOptionPane;
 
-import org.fife.ui.rsyntaxtextarea.SyntaxScheme;
 
 import jakarta.xml.bind.JAXBContext;
 import jakarta.xml.bind.JAXBException;
@@ -48,10 +45,8 @@ public class Configuration {
 	private String scheme;
 
 
+	/** The editor's colour scheme as the editor saved it, or null for its default. */
 	public String getScheme() {
-		if( scheme == null ) {
-			scheme = new SyntaxScheme(null, true).toCommaSeparatedString();
-		}
 		return scheme;
 	}
 
@@ -100,12 +95,16 @@ public class Configuration {
 			}
 			return ret;
 		} catch (Exception e) {
-			if( !GraphicsEnvironment.isHeadless()) {
-				JOptionPane.showMessageDialog(null, "Can't read "+file+"; using the default settings.\n"+e,
-						"Error managing configuration", JOptionPane.ERROR_MESSAGE);
-			}
+			loadError = new IOException("Can't read "+file+"; using the default settings", e);
 			return createDefault();
 		}
+	}
+
+	private static volatile IOException loadError;
+
+	/** Why the saved configuration couldn't be read (the defaults are used instead), or null. */
+	public static IOException getLoadError() {
+		return loadError;
 	}
 
 	private static JAXBContext jaxbContext;
@@ -323,7 +322,6 @@ public class Configuration {
 		ret.setLineWrap(false);
 		ret.setTabSize(4);
 
-		ret.setScheme(new SyntaxScheme(null, true).toCommaSeparatedString());
 		populateDefault(ret.templates);
 
 		return ret;
