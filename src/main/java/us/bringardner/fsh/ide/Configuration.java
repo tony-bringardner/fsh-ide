@@ -12,8 +12,12 @@
  */
 package us.bringardner.fsh.ide;
 
+import java.awt.GraphicsEnvironment;
 import java.io.File;
 import java.io.IOException;
+import java.nio.file.AtomicMoveNotSupportedException;
+import java.nio.file.Files;
+import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -35,8 +39,8 @@ import jakarta.xml.bind.annotation.XmlRootElement;
 @XmlRootElement
 @XmlAccessorType (XmlAccessType.FIELD)
 public class Configuration {
-	private static File configFile;
-	private static Configuration global;
+	private static volatile File configFile;
+	private static volatile Configuration global;
 	private int maxRecent=10;
 	private int minVariableNameLength=2;
 	private int tabSize= 4;
@@ -68,21 +72,7 @@ public class Configuration {
 		if( global == null ) {
 			synchronized (Configuration.class) {
 				if( global == null ) {
-					Configuration tmp = null;
-					File file = getConfigFile();
-					if( file.exists()) {
-						try {							
-							JAXBContext ctx = JAXBContext.newInstance(Configuration.class);
-							Unmarshaller um = ctx.createUnmarshaller();
-							tmp = (Configuration) um.unmarshal(file);
-							tmp = createDefault();
-						} catch (Exception e) {
-							JOptionPane.showMessageDialog(null, e.getMessage(), "Error managing configuration", JOptionPane.ERROR_MESSAGE);
-						}
-					} else {
-						tmp = createDefault();
-					}
-					global = tmp;
+					global = load(getConfigFile());
 				}
 			}
 		}
@@ -90,11 +80,43 @@ public class Configuration {
 		return global;
 	}
 
+	/**
+	 * The configuration saved in file, with any default templates it lacks added.
+	 * Defaults if there's no file or it can't be read, so the IDE always has one.
+	 */
+	static Configuration load(File file) {
+		if( !file.exists()) {
+			return createDefault();
+		}
+		try {
+			Unmarshaller um = jaxb().createUnmarshaller();
+			Configuration ret = (Configuration) um.unmarshal(file);
+			if( ret.templates == null ) {
+				ret.templates = new ArrayList<>();
+			}
+			populateDefault(ret.templates);
+			if( ret.defaultColors == null ) {
+				ret.defaultColors = new TreeMap<>();
+			}
+			return ret;
+		} catch (Exception e) {
+			if( !GraphicsEnvironment.isHeadless()) {
+				JOptionPane.showMessageDialog(null, "Can't read "+file+"; using the default settings.\n"+e,
+						"Error managing configuration", JOptionPane.ERROR_MESSAGE);
+			}
+			return createDefault();
+		}
+	}
 
+	private static JAXBContext jaxbContext;
 
+	private static synchronized JAXBContext jaxb() throws JAXBException {
+		if( jaxbContext == null ) {
+			jaxbContext = JAXBContext.newInstance(Configuration.class);
+		}
+		return jaxbContext;
+	}
 
-
-	
 	private static File getConfigFile() {
 		if( configFile == null ) {
 			synchronized (Configuration.class) {
@@ -134,15 +156,25 @@ public class Configuration {
 	}
 
 	public void save () throws IOException {
-		JAXBContext ctx;
+		save(getConfigFile());
+	}
+
+	/** Writes to a temporary file first, so a failed save leaves the old file intact. */
+	void save(File file) throws IOException {
+		File tmp = new File(file.getParentFile(), file.getName()+".tmp");
 		try {
-			ctx = JAXBContext.newInstance(Configuration.class);
-			Marshaller um = ctx.createMarshaller();
-			um.marshal(this, getConfigFile());
+			Marshaller m = jaxb().createMarshaller();
+			m.marshal(this, tmp);
+			try {
+				Files.move(tmp.toPath(), file.toPath(), StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+			} catch (AtomicMoveNotSupportedException e) {
+				Files.move(tmp.toPath(), file.toPath(), StandardCopyOption.REPLACE_EXISTING);
+			}
 		} catch (JAXBException e) {
 			throw new IOException(e);
+		} finally {
+			Files.deleteIfExists(tmp.toPath());
 		}
-	
 	}
 
 	public int getMaxRecent() {
@@ -172,8 +204,8 @@ public class Configuration {
 
 
 	public void setTemplates(List<Template> templates) {
-		this.templates = new ArrayList<Template>();
-		populateDefault(this.templates);		
+		this.templates = templates == null ? new ArrayList<>() : new ArrayList<>(templates);
+		populateDefault(this.templates);
 	}
 
 	

@@ -12,20 +12,22 @@
 */
 package us.bringardner.fsh.ide;
 
-import javax.swing.text.Highlighter.Highlight;
+import org.fife.ui.rtextarea.GutterIconInfo;
 
 public class Breakpoint {
 	private static int instanceCount=-1;
 	private int id;
-	private Highlight tag;
+	private GutterIconInfo tag;
 	private boolean enabled=true;
-	private int line=-1;
+	// kept up to date by EditorPanel as the text is edited; read by the script thread
+	private volatile int line=-1;
 	private String code="";
 	private boolean isConditional=false;
 	private String condition="";
 	private int targetHitCount=-1;
 	private int actualHitCount = -1;
 	private boolean isHitCount=false;
+	private volatile boolean conditionErrorReported=false;
 	
 	
 	public Breakpoint() {
@@ -34,17 +36,17 @@ public class Breakpoint {
 		}		
 	}
 	
-	public Breakpoint(Highlight tag) {
+	public Breakpoint(GutterIconInfo tag) {
 		this();
 		this.tag = tag;
 	}
 	
-	public Highlight getTag() {
+	public GutterIconInfo getTag() {
 		return tag;
 	}
 
 
-	public void setTag(Highlight tag) {
+	public void setTag(GutterIconInfo tag) {
 		this.tag = tag;
 	}
 
@@ -83,7 +85,7 @@ public class Breakpoint {
 		this.enabled = enabled;
 	}
 	public int getOffset() {
-		return tag.getStartOffset();
+		return tag.getMarkedOffset();
 	}
 	
 	public int getLine() {
@@ -106,7 +108,15 @@ public class Breakpoint {
 	}
 	
 	public void reset() {
-		actualHitCount = 0;		
+		actualHitCount = 0;
+		conditionErrorReported = false;
+	}
+
+	/** True the first time it's called after reset(), so a bad condition is reported once per run. */
+	public boolean reportConditionError() {
+		boolean ret = !conditionErrorReported;
+		conditionErrorReported = true;
+		return ret;
 	}
 	
 }

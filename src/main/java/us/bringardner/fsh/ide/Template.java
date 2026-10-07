@@ -12,6 +12,8 @@
 */
 package us.bringardner.fsh.ide;
 
+import java.util.Objects;
+
 import org.fife.ui.autocomplete.DefaultCompletionProvider;
 import org.fife.ui.autocomplete.ShorthandCompletion;
 import org.fife.ui.autocomplete.TemplateCompletion;
@@ -79,13 +81,16 @@ public class Template {
 		boolean ret = false;
 		if (obj instanceof Template) {
 			Template tp = (Template) obj;
-			ret = tp.name.equals(name) 
-					&& tp.description.equals(description)
-					&& tp.code.equals(code)
+			ret = Objects.equals(tp.name, name)
+					&& Objects.equals(tp.description, description)
+					&& Objects.equals(tp.code, code)
 					;
 		}
 		return ret;
 	}
 
-
+	@Override
+	public int hashCode() {
+		return Objects.hash(name, description, code);
+	}
 }

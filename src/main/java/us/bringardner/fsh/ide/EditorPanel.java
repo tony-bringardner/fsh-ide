@@ -13,12 +13,17 @@
 package us.bringardner.fsh.ide;
 
 import java.awt.BorderLayout;
+import java.awt.Component;
+import java.util.Collections;
+import java.util.Iterator;
+import javax.swing.event.DocumentEvent;
+import javax.swing.event.DocumentListener;
+import org.fife.ui.rtextarea.Gutter;
+import org.fife.ui.rtextarea.GutterIconInfo;
+import org.fife.ui.rtextarea.IconRowHeader;
 import java.awt.Color;
-import java.awt.Dimension;
 import java.awt.EventQueue;
 import java.awt.Font;
-import java.awt.FontMetrics;
-import java.awt.Graphics;
 import java.awt.Point;
 import java.awt.Toolkit;
 import java.awt.datatransfer.Clipboard;
@@ -42,8 +47,6 @@ import javax.swing.JMenuItem;
 import javax.swing.JOptionPane;
 import javax.swing.JPanel;
 import javax.swing.JPopupMenu;
-import javax.swing.JSplitPane;
-import javax.swing.JTextArea;
 import javax.swing.SwingUtilities;
 import javax.swing.text.BadLocationException;
 import javax.swing.text.Document;
@@ -77,7 +80,6 @@ public class EditorPanel extends JPanel {
 	private List<BreakpointListner> breakpointListners = new ArrayList<EditorPanel.BreakpointListner>();
 
 	private AutoCompletion autoComplete;
-	private int fontHeight;
 	private FshIDETextArea editorPane = new FshIDETextArea(200,200) {
 		/**
 		 * 
@@ -93,15 +95,9 @@ public class EditorPanel extends JPanel {
 				//System.out.println("df="+df.getClass());
 				if (df instanceof String) {
 					String str = (String) df;
-					byte[] data = str.getBytes();
-					StringBuilder buf = new StringBuilder();
-					for(byte b : data) {
-						if( b >=9 && b <=127) {
-							buf.append((char)b);
-						}
-					}
-					if( buf.length() != str.length()) {
-						cb.setContents(new StringSelection(buf.toString()),null);
+					String cleaned = FshIDE.clean(str);
+					if( !cleaned.equals(str)) {
+						cb.setContents(new StringSelection(cleaned),null);
 					}
 				}
 
@@ -118,13 +114,12 @@ public class EditorPanel extends JPanel {
 	private Icon breakpointIcon = new ImageIcon(Toolkit.getDefaultToolkit().getImage(FshIDE.class.getResource("/img/eclipse_brkp_obj.png")));
 	private Icon errorIcon      = new ImageIcon(Toolkit.getDefaultToolkit().getImage(FshIDE.class.getResource("/img/eclipse_err_obj.png")));
 
-	Map<Integer,Breakpoint> breakpoints = new TreeMap<>();
-	Map<Integer,FshIDE.CompileError> compileErrs = new TreeMap<>();
-	
-
-	private JPanel iconPanel;
-
-	private JTextArea lineNumberTextArea;
+	private Gutter gutter;
+	// Edited on the EDT only. Each breakpoint's gutter icon tracks its line as the text changes.
+	private final List<Breakpoint> breakpointList = new ArrayList<>();
+	// Line -> breakpoint, rebuilt on the EDT after each edit; the script thread reads it
+	private volatile Map<Integer,Breakpoint> breakpoints = Collections.emptyMap();
+	private final List<GutterIconInfo> errorTags = new ArrayList<>();
 
 
 	
@@ -182,9 +177,139 @@ public class EditorPanel extends JPanel {
 	}
 
 
+	/** Breakpoints by (0-based) line. A snapshot, safe to read from any thread. */
 	public Map<Integer, Breakpoint> getBreakpoints() {
-		
 		return breakpoints;
+	}
+
+	/** The breakpoint on line (0-based), or null. */
+	public Breakpoint getBreakpoint(int line) {
+		return breakpoints.get(line);
+	}
+
+	/** Adds a breakpoint on line (0-based) unless the line is blank or already has one. */
+	public Breakpoint addBreakpoint(int line) {
+		Breakpoint bp = breakpoints.get(line);
+		if( bp != null ) {
+			return bp;
+		}
+		String code = "";
+		try {
+			int start = editorPane.getLineStartOffset(line);
+			int end = editorPane.getLineEndOffset(line);
+			code = editorPane.getText(start, end-start).trim();
+			if( code.isEmpty()) {
+				return null;
+			}
+			bp = new Breakpoint(gutter.addLineTrackingIcon(line, breakpointIcon));
+		} catch (BadLocationException e) {
+			return null;
+		}
+		bp.setCode(code);
+		bp.setLine(line);
+		breakpointList.add(bp);
+		refreshBreakpoints();
+		fireBreakpointsChanged();
+		return bp;
+	}
+
+	public void removeBreakpoint(Breakpoint bp) {
+		if( breakpointList.remove(bp)) {
+			if( bp.getTag() != null ) {
+				gutter.removeTrackingIcon(bp.getTag());
+			}
+			refreshBreakpoints();
+			fireBreakpointsChanged();
+		}
+	}
+
+	private void fireBreakpointsChanged() {
+		for(BreakpointListner l : breakpointListners) {
+			l.changed();
+		}
+	}
+
+	/**
+	 * Moves each breakpoint to the line its icon is now on. Two that end up on the same
+	 * line (the text between them was deleted) become one.
+	 * @return true if any breakpoint changed line
+	 */
+	private boolean refreshBreakpoints() {
+		boolean changed = false;
+		Map<Integer,Breakpoint> map = new TreeMap<>();
+		for(Iterator<Breakpoint> it = breakpointList.iterator(); it.hasNext(); ) {
+			Breakpoint bp = it.next();
+			int line;
+			try {
+				line = editorPane.getLineOfOffset(bp.getOffset());
+			} catch (BadLocationException e) {
+				line = -1;
+			}
+			if( line < 0 || map.containsKey(line)) {
+				gutter.removeTrackingIcon(bp.getTag());
+				it.remove();
+				changed = true;
+				continue;
+			}
+			if( line != bp.getLine()) {
+				bp.setLine(line);
+				changed = true;
+			}
+			map.put(line, bp);
+		}
+		breakpoints = Collections.unmodifiableMap(map);
+		return changed;
+	}
+
+	private int lineAt(Point p) {
+		int offs = editorPane.viewToModel2D(new Point(0, p.y));
+		try {
+			return offs < 0 ? -1 : editorPane.getLineOfOffset(offs);
+		} catch (BadLocationException e) {
+			return -1;
+		}
+	}
+
+	/** The compile error message on line (0-based), or null. */
+	String errorAt(int line) {
+		for(GutterIconInfo tag : errorTags) {
+			try {
+				if( editorPane.getLineOfOffset(tag.getMarkedOffset()) == line) {
+					return tag.getToolTip();
+				}
+			} catch (BadLocationException e) {
+			}
+		}
+		return null;
+	}
+
+	private void gutterClicked(MouseEvent e) {
+		int line = lineAt(e.getPoint());
+		if( line < 0 ) {
+			return;
+		}
+		Breakpoint bp = breakpoints.get(line);
+		if( SwingUtilities.isRightMouseButton(e) || e.isPopupTrigger()) {
+			if( bp != null) {
+				BreakpointPropertiesDialog d = new BreakpointPropertiesDialog();
+				Point p = e.getLocationOnScreen();
+				d.showDialog(bp, gutter, p.x, p.y);
+				if( d.isDelete()) {
+					removeBreakpoint(bp);
+				} else {
+					fireBreakpointsChanged();
+				}
+			}
+			return;
+		}
+		String err = errorAt(line);
+		if( err != null ) {
+			JOptionPane.showMessageDialog(gutter, err, "Compile Error: ", JOptionPane.ERROR_MESSAGE);
+		} else if( bp != null ) {
+			removeBreakpoint(bp);
+		} else {
+			addBreakpoint(line);
+		}
 	}
 
 	/**
@@ -198,103 +323,45 @@ public class EditorPanel extends JPanel {
 		setLayout(new BorderLayout(0, 0));
 
 		scrollPane = new RTextScrollPane(editorPane);
-		scrollPane.setIconRowHeaderEnabled(false);
+		scrollPane.setIconRowHeaderEnabled(true);
 		scrollPane.setLineNumbersEnabled(true);
 		scrollPane.setFoldIndicatorEnabled(true);
 		scrollPane.setWheelScrollingEnabled(true);
 		scrollPane.setAutoscrolls(true);
-		
-		JSplitPane splitPane = new JSplitPane();
-		splitPane.setBorder(null);
-		splitPane.setEnabled(false);
-		splitPane.setDividerSize(0);
-		scrollPane.setRowHeaderView(splitPane);
 
-		lineNumberTextArea = new JTextArea();
-		lineNumberTextArea.setBorder(null);
-		lineNumberTextArea.setFocusable(false);
-		lineNumberTextArea.setText("1\n2\n3\n4");
-		splitPane.setRightComponent(lineNumberTextArea);
-
-		iconPanel = new JPanel() {
-			private static final long serialVersionUID = 1L;
-			
-
-			
-			
-			@Override
-			public void paint(Graphics g) {				
-				g.setColor(Color.white);
-				g.fillRect(0, 0, getWidth(), getHeight());				
-				Font f = editorPane.getFont();
-				FontMetrics fm = g.getFontMetrics(f);
-				fontHeight = fm.getHeight();
-				for(Breakpoint b : breakpoints.values()) {
-					breakpointIcon.paintIcon(iconPanel, g, 0, fontHeight*(b.getLine()));	
-				}
-				for(CompileError err :compileErrs.values()) {
-					errorIcon.paintIcon(iconPanel, g, 0, fontHeight*(err.line-1));
-				}
-			}	
-		};
-		iconPanel.setBackground(new Color(238, 238, 238));
-		iconPanel.setFocusable(false);
-		iconPanel.addMouseListener(new MouseAdapter() {
-			
+		// Breakpoints and compile errors are gutter icons, which follow their line as text
+		// is inserted or removed above them (and are drawn in the right place when lines wrap).
+		gutter = scrollPane.getGutter();
+		MouseAdapter gutterMouse = new MouseAdapter() {
 			@Override
 			public void mousePressed(MouseEvent e) {
-				
-				Point p = e.getPoint();
-				int line = (p.y/fontHeight);
-				if( e.getButton() == MouseEvent.BUTTON3) {
-					Breakpoint bp = breakpoints.get(line);
-					if( bp != null) {
-						BreakpointPropertiesDialog d = new BreakpointPropertiesDialog();
-						p = e.getLocationOnScreen();
-						d.showDialog(bp, iconPanel, p.x, p.y);
-						if( d.isDelete()) {
-							breakpoints.remove(bp.getLine());
-							updateUI();
-						}
-
-					}
-				} else
-				if( compileErrs.containsKey(line+1) ) {
-					CompileError ce = compileErrs.get(line+1);
-					JOptionPane.showMessageDialog(iconPanel, ce.msg, "Compile Error: ", JOptionPane.ERROR_MESSAGE);
-					
-				} else if(breakpoints.remove(line) == null) {
-					String code = "";
-					try {
-						int start = editorPane.getLineStartOffset(line);
-						int end = editorPane.getLineEndOffset(line);
-						code = editorPane.getText(start, end-start).trim();
-					} catch (BadLocationException e1) {
-						// TODO Auto-generated catch block
-						e1.printStackTrace();
-					}
-					if( !code.isEmpty()) {
-						Breakpoint bp = new Breakpoint();
-						bp.setCode(code);
-						bp.setLine(line);
-						breakpoints.put(line,bp);
-					}
-				}
-				iconPanel.updateUI();
-				for(BreakpointListner bpl : breakpointListners) {
-					bpl.changed();
-				}
-				
+				gutterClicked(e);
+			}
+		};
+		boolean found = false;
+		for(Component c : gutter.getComponents()) {
+			if( c instanceof IconRowHeader) {
+				c.addMouseListener(gutterMouse);
+				found = true;
+			}
+		}
+		if( !found ) {
+			gutter.addMouseListener(gutterMouse);
+		}
+		editorPane.getDocument().addDocumentListener(new DocumentListener() {
+			@Override
+			public void insertUpdate(DocumentEvent e) {
+				textChanged();
+			}
+			@Override
+			public void removeUpdate(DocumentEvent e) {
+				textChanged();
+			}
+			@Override
+			public void changedUpdate(DocumentEvent e) {
 			}
 		});
-		iconPanel.setPreferredSize(new Dimension(18, 0));
-		iconPanel.setBorder(null);
-		splitPane.setLeftComponent(iconPanel);
-		iconPanel.setLayout(null);
-		
-		scrollPane.setRowHeaderView(splitPane);
-		
-		
+
 		add(scrollPane, BorderLayout.CENTER);
 		createAutoComplete();
 		
@@ -370,72 +437,14 @@ public class EditorPanel extends JPanel {
 					} 
 				} else if(e.isAltDown()) {
 					if( c == KeyEvent.VK_F) {// 102 == F
-						findDialog.find();
+						if( findDialog == null ) {
+							findDialog = new FindDialog();
+							findDialog.showDialog(editorPane);
+						} else {
+							findDialog.find();
+						}
 						keep = false;
 					}
-				} else if( c == KeyEvent.VK_DELETE) {
-					// removes char in front
-					int pos = editorPane.getCaretPosition();
-					try {
-						String ch = editorPane.getDocument().getText(pos, 1);
-						//System.out.println("have delete ch="+((int)ch.charAt(0)));
-						if( (int)ch.charAt(0)=='\n') {
-							int line = editorPane.getLineOfOffset(pos);
-							for(Breakpoint bp : breakpoints.values()) {
-								int line2 = bp.getLine();
-								if( line2 >= line) {
-									bp.setLine(line2-1);
-								}
-							}
-							iconPanel.updateUI();
-						}
-					} catch (BadLocationException e1) {
-						// TODO Auto-generated catch block
-						e1.printStackTrace();
-					}
-
-
-
-				} else if( c == KeyEvent.VK_BACK_SPACE) {
-					// removes char behind
-					int pos = editorPane.getCaretPosition();
-					try {
-						String ch = editorPane.getDocument().getText(pos-1, 1);
-						if( (int)ch.charAt(0)=='\n') {
-							int line = editorPane.getLineOfOffset(pos);
-							for(Breakpoint bp : breakpoints.values()) {
-								int line2 = bp.getLine();
-								if( line2 >= line) {
-									bp.setLine(line2-1);
-								}
-							}
-							iconPanel.updateUI();
-						}
-							
-					} catch (BadLocationException e1) {
-					}
-
-					//System.out.println("have backspace");
-				} else if( c == KeyEvent.VK_ENTER ) {
-					// insert nl at pos
-					int pos = editorPane.getCaretPosition();
-					for(Breakpoint bp : breakpoints.values()) {
-						int pos2 =  getLineStartOffset(bp.getLine());
-						if( pos2>=pos) {
-							bp.setLine(bp.getLine()+1);
-						}
-					}
-					
-					for(BreakpointListner l : breakpointListners) {
-						l.changed();
-					}
-					StringBuilder b = new StringBuilder();
-					for(int i=0;i<= editorPane.getLineCount(); i++) {
-						b.append(""+(i+1));
-						b.append('\n');
-					}
-					lineNumberTextArea.setText(b.toString());
-					iconPanel.updateUI();
 				}
 				if( keep ) {
 					super.keyPressed(e);
@@ -447,10 +456,12 @@ public class EditorPanel extends JPanel {
 		
 		});
 
-		
-		
-		lineNumberTextArea.setFont(editorPane.getFont());
-		
+	}
+
+	private void textChanged() {
+		if( !breakpointList.isEmpty() && refreshBreakpoints()) {
+			fireBreakpointsChanged();
+		}
 	}
 
 
@@ -597,8 +608,10 @@ public class EditorPanel extends JPanel {
 		editorPane.setText(string);
 		editorPane.setCaretPosition(0);
 		editorPane.removeAllLineHighlights();
-		breakpoints.clear();
-		iconPanel.updateUI();		
+		gutter.removeAllTrackingIcons();
+		breakpointList.clear();
+		errorTags.clear();
+		breakpoints = Collections.emptyMap();
 		scriptDir = scriptFile;
 		try {
 			if( scriptDir != null && scriptDir.isFile()) {
@@ -610,13 +623,24 @@ public class EditorPanel extends JPanel {
 		}
 		
 		
-		for(BreakpointListner l : breakpointListners) {
-			l.changed();
-		}
+		fireBreakpointsChanged();
+	}
+
+	FshIDETextArea getTextArea() {
+		return editorPane;
 	}
 
 	public String getText() {
 		return editorPane.getText();
+	}
+
+	/** The (0-based) line the selection starts on. */
+	public int getSelectionStartLine() {
+		try {
+			return editorPane.getLineOfOffset(editorPane.getSelectionStart());
+		} catch (BadLocationException e) {
+			return 0;
+		}
 	}
 
 	public String getSelectedText() {
@@ -674,8 +698,6 @@ public class EditorPanel extends JPanel {
 		super.setFont(font);
 		if( editorPane != null ) {
 			editorPane.setFont(font);
-			iconPanel.setFont(font);
-			lineNumberTextArea.setFont(font);
 		}
 	}
 	
@@ -695,16 +717,22 @@ public class EditorPanel extends JPanel {
 		editorPane.setSyntaxScheme(scheme);
 	}
 
+	/** Call on the EDT. error.line is 1-based. */
 	public void addErrorMarker(CompileError error) {
-		
-		compileErrs.put(error.line, error);
-		iconPanel.updateUI();
+		int line = error.line-1;
+		if( line >= 0 && line < editorPane.getLineCount()) {
+			try {
+				errorTags.add(gutter.addLineTrackingIcon(line, errorIcon, error.msg));
+			} catch (BadLocationException e) {
+			}
+		}
 	}
 
+	/** Call on the EDT. */
 	public void clearErrorMarkers() {
-		compileErrs.clear();
-		iconPanel.updateUI();
-
-		
+		for(GutterIconInfo tag : errorTags) {
+			gutter.removeTrackingIcon(tag);
+		}
+		errorTags.clear();
 	}
 }

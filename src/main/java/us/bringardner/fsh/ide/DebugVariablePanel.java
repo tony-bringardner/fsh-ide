@@ -43,6 +43,7 @@ public class DebugVariablePanel extends JPanel  {
 
 	private static final long serialVersionUID = 1L;
 	private ShellContext ctx ;	
+	private Map<String,Object> variableSnapshot;
 
 	
 	private String [] variablesColumnNames = {"Name","Type","Value"};
@@ -99,6 +100,8 @@ public class DebugVariablePanel extends JPanel  {
 				} else {
 					ctx.setVariable(name, aValue);
 				}
+				// the script is paused, so its variables can be read here
+				variableSnapshot = ctx.getVariables();
 				createNodes();
 			} 
 		}
@@ -254,11 +257,10 @@ public class DebugVariablePanel extends JPanel  {
 					BreakpointPropertiesDialog d = new BreakpointPropertiesDialog();
 					d.showDialog(bp, btable, e.getXOnScreen(), e.getYOnScreen());
 					if( d.isDelete()) {
-						editorPane.breakpoints.remove(bp.getLine());
-						breakpoints.remove(row);
+						// the editor's breakpoint listener refreshes this table
+						editorPane.removeBreakpoint(bp);
+					} else {
 						breakpointsTableModel.fireTableDataChanged();
-						updateUI();
-						editorPane.updateUI();
 					}
 				}
 			}
@@ -304,16 +306,18 @@ public class DebugVariablePanel extends JPanel  {
 	private void createNodes() {
 		
 		List<Variable> tmp1=new ArrayList<Variable>();
-		if( ctx != null ) {
-			
-			Map<String, Object> map = ctx.getVariables();
-			for(String name: map.keySet()) {
-				tmp1.add(new Variable(name,map.get(name)));
+		if( ctx != null && variableSnapshot != null ) {
+			for(Map.Entry<String, Object> e: variableSnapshot.entrySet()) {
+				tmp1.add(new Variable(e.getKey(),e.getValue()));
 			}
-			
 		}
 		variables = tmp1;
 		variableTableModel.fireTableDataChanged();
+		refreshBreakpoints();
+	}
+
+	/** Reloads the breakpoints table from the editor. */
+	public void refreshBreakpoints() {
 		List<Breakpoint> tmp = new ArrayList<Breakpoint>();
 		if( editorPane != null ) {
 			Map<Integer, Breakpoint> map = editorPane.getBreakpoints();			
@@ -326,10 +330,19 @@ public class DebugVariablePanel extends JPanel  {
 		
 	}
 
-	public void setContext(EditorPanel editorPane, ShellContext ctx ) {
+	/**
+	 * @param variables ctx's variables, read on the script's own thread (ctx.getVariables()),
+	 *        since the script may still be changing them while this runs on the EDT
+	 */
+	public void setContext(EditorPanel editorPane, ShellContext ctx, Map<String,Object> variables ) {
 		this.ctx = ctx;
+		this.variableSnapshot = variables;
 		this.editorPane = editorPane;
 		createNodes();
+	}
+
+	public void setContext(EditorPanel editorPane, ShellContext ctx ) {
+		setContext(editorPane, ctx, ctx == null ? null : ctx.getVariables());
 	}
 
 	public void updateTree(ParseTree tree, String string) {		

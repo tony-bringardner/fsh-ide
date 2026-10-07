@@ -112,7 +112,7 @@ public class FshIDETextArea extends RSyntaxTextArea {
 		aMap.put(name,  a);
 
 		name = RSyntaxTextAreaEditorKit.rstaExpandAllFoldsAction;
-		a = new RSyntaxTextAreaEditorKit.CollapseAllFoldsAction();
+		a = new RSyntaxTextAreaEditorKit.ExpandAllFoldsAction();
 		inMap.put(KeyStroke.getKeyStroke(KeyEvent.VK_ADD, InputEvent.CTRL_DOWN_MASK | InputEvent.SHIFT_DOWN_MASK ),name);
 		aMap.put(name,  a);
 
@@ -122,10 +122,6 @@ public class FshIDETextArea extends RSyntaxTextArea {
 		inMap.put(KeyStroke.getKeyStroke(KeyEvent.VK_C, InputEvent.CTRL_DOWN_MASK | InputEvent.SHIFT_DOWN_MASK ),name);
 		aMap.put(name,  a);
 
-		name = RSyntaxTextAreaEditorKit.rstaCollapseAllCommentFoldsAction;
-		a = new RSyntaxTextAreaEditorKit.CollapseAllCommentFoldsAction();
-		inMap.put(KeyStroke.getKeyStroke(KeyEvent.VK_C, InputEvent.CTRL_DOWN_MASK | InputEvent.SHIFT_DOWN_MASK ),name);
-		aMap.put(name,  a);
 		
 	}
 
